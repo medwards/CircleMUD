@@ -604,6 +604,8 @@ void game_loop(socket_t mother_desc)
 
   gettimeofday(&last_time, (struct timezone *) 0);
 
+  bool prototype = 0; // trigger prototype ffi client creation once
+
   /* The Main Loop.  The Big Cheese.  The Top Dog.  The Head Honcho.  The.. */
   while (!circle_shutdown) {
 
@@ -612,7 +614,7 @@ void game_loop(socket_t mother_desc)
       log("No connections.  Going to sleep.");
       FD_ZERO(&input_set);
       FD_SET(mother_desc, &input_set);
-      if (select(mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
+      if (prototype && select(mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
 	if (errno == EINTR)
 	  log("Waking up to process signal.");
 	else
@@ -629,6 +631,8 @@ void game_loop(socket_t mother_desc)
 
     maxdesc = mother_desc;
     for (d = descriptor_list; d; d = d->next) {
+      if (d->client_type == CLIENT_FFI)
+        continue;
 #ifndef CIRCLE_WINDOWS
       if (d->descriptor > maxdesc)
 	maxdesc = d->descriptor;
@@ -685,22 +689,31 @@ void game_loop(socket_t mother_desc)
     if (FD_ISSET(mother_desc, &input_set))
       new_descriptor(mother_desc);
 
+    if (!prototype) {
+      prototype = 1;
+      new_ffi_descriptor(0);
+    }
+
     /* Kick out the freaky folks in the exception set and marked for close */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (FD_ISSET(d->descriptor, &exc_set)) {
+      if (d->client_type == CLIENT_TELNET && FD_ISSET(d->descriptor, &exc_set)) {
 	FD_CLR(d->descriptor, &input_set);
 	FD_CLR(d->descriptor, &output_set);
 	close_socket(d);
       }
+      // no socket error conditions to worry about /w the FFI client
     }
 
     /* Process descriptors with input pending */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (FD_ISSET(d->descriptor, &input_set))
+      if (d->client_type == CLIENT_TELNET && FD_ISSET(d->descriptor, &input_set))
 	if (process_input(d) < 0)
 	  close_socket(d);
+      else if (d->client_type == CLIENT_FFI)
+	if (process_ffi_input(d) < 0)
+	  free_descriptor(d);
     }
 
     /* Process commands we just read from process_input */
@@ -755,10 +768,17 @@ void game_loop(socket_t mother_desc)
     /* Send queued output out to the operating system (ultimately to user). */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (*(d->output) && FD_ISSET(d->descriptor, &output_set)) {
+      if (*(d->output) && d->client_type == CLIENT_TELNET && FD_ISSET(d->descriptor, &output_set)) {
 	/* Output for this player is ready. */
 
         process_output(d);
+        if (d->bufptr == 0)	/* All output sent. */
+          d->has_prompt = TRUE;
+      }
+      if (*(d->output) && d->client_type == CLIENT_FFI) {
+	/* Output for this player is ready. */
+
+        process_ffi_output(d);
         if (d->bufptr == 0)	/* All output sent. */
           d->has_prompt = TRUE;
       }
@@ -766,8 +786,12 @@ void game_loop(socket_t mother_desc)
 
     /* Print prompts for other descriptors who had no other output */
     for (d = descriptor_list; d; d = d->next) {
-      if (!d->has_prompt && d->bufptr == 0) {
+      if (!d->has_prompt && d->bufptr == 0 && d->client_type == CLIENT_TELNET) {
 	write_to_descriptor(d->descriptor, make_prompt(d));
+	d->has_prompt = TRUE;
+      }
+      if (!d->has_prompt && d->bufptr == 0 && d->client_type == CLIENT_FFI) {
+	ffi_write_to_descriptor(d->descriptor, make_prompt(d));
 	d->has_prompt = TRUE;
       }
     }
@@ -775,8 +799,10 @@ void game_loop(socket_t mother_desc)
     /* Kick out folks in the CON_CLOSE or CON_DISCONNECT state */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT)
+      if (d->client_type == CLIENT_TELNET && (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT))
 	close_socket(d);
+      if (d->client_type == CLIENT_FFI && (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT))
+	free_descriptor(d);
     }
 
     /*
@@ -1382,6 +1408,80 @@ int new_descriptor(socket_t s)
   return (0);
 }
 
+/* simplified new_descriptor for the ffi client */
+// TODO: move to a client specific header
+int new_ffi_descriptor(int ffi_id)
+{
+  int sockets_connected = 0;
+  static int last_desc = 0;	/* last descriptor number */
+  struct descriptor_data *newd;
+  struct hostent *from;
+
+
+  /* make sure we have room for it */
+  for (newd = descriptor_list; newd; newd = newd->next)
+    sockets_connected++;
+  if (sockets_connected >= max_players) {
+    // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
+    ffi_write_to_descriptor(NULL, "Sorry, CircleMUD is full right now... please try again later!\r\n");
+    ffi_close_descriptor(NULL);
+    return (0);
+  }
+
+  /* create a new descriptor */
+  CREATE(newd, struct descriptor_data, 1);
+
+  /* find the sitename */
+  strncpy(newd->host, "FfiClient:ffi_id", 10);
+
+  // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
+  /* determine if the site is banned */
+  if (isbanned(newd->host) == BAN_ALL) {
+    ffi_close_descriptor(NULL);
+    mudlog(CMP, LVL_GOD, TRUE, "Connection attempt denied from [%s]", newd->host);
+    free(newd);
+    return (0);
+  }
+#if 0
+  /*
+   * Log new connections - probably unnecessary, but you may want it.
+   * Note that your immortals may wonder if they see a connection from
+   * your site, but you are wizinvis upon login.
+   */
+  mudlog(CMP, LVL_GOD, FALSE, "New connection from [%s]", newd->host);
+#endif
+
+  /* initialize descriptor data */
+  newd->descriptor = NULL;
+  newd->ffi_id = ffi_id;
+  newd->idle_tics = 0;
+  newd->output = newd->small_outbuf;
+  newd->bufspace = SMALL_BUFSIZE - 1;
+  newd->login_time = time(0);
+  *newd->output = '\0';
+  newd->bufptr = 0;
+  newd->has_prompt = 1;  /* prompt is part of greetings */
+  STATE(newd) = CON_GET_NAME;
+
+  /*
+   * This isn't exactly optimal but allows us to make a design choice.
+   * Do we embed the history in descriptor_data or keep it dynamically
+   * allocated and allow a user defined history size?
+   */
+  CREATE(newd->history, char *, HISTORY_SIZE);
+
+  if (++last_desc == 1000)
+    last_desc = 1;
+  newd->desc_num = last_desc;
+
+  /* prepend to list */
+  newd->next = descriptor_list;
+  descriptor_list = newd;
+
+  write_to_output(newd, "%s", GREETINGS);
+
+  return (0);
+}
 
 /*
  * Send all of the output that we've accumulated for a player out to
@@ -1478,6 +1578,89 @@ int process_output(struct descriptor_data *t)
   return (result);
 }
 
+int process_ffi_output(struct descriptor_data *t) {
+  char i[MAX_SOCK_BUF], *osb = i + 2;
+  int result;
+
+  /* we may need this \r\n for later -- see below */
+  strcpy(i, "\r\n");	/* strcpy: OK (for 'MAX_SOCK_BUF >= 3') */
+
+  /* now, append the 'real' output */
+  strcpy(osb, t->output);	/* strcpy: OK (t->output:LARGE_BUFSIZE < osb:MAX_SOCK_BUF-2) */
+
+  /* if we're in the overflow state, notify the user */
+  if (t->bufspace == 0)
+    strcat(osb, "**OVERFLOW**\r\n");	/* strcpy: OK (osb:MAX_SOCK_BUF-2 reserves space) */
+
+  /* add the extra CRLF if the person isn't in compact mode */
+  if (STATE(t) == CON_PLAYING && t->character && !IS_NPC(t->character) && !PRF_FLAGGED(t->character, PRF_COMPACT))
+    strcat(osb, "\r\n");	/* strcpy: OK (osb:MAX_SOCK_BUF-2 reserves space) */
+
+  /* add a prompt */
+  strcat(i, make_prompt(t));	/* strcpy: OK (i:MAX_SOCK_BUF reserves space) */
+
+  /*
+   * now, send the output.  If this is an 'interruption', use the prepended
+   * CRLF, otherwise send the straight output sans CRLF.
+   */
+  if (t->has_prompt) {
+    t->has_prompt = FALSE;
+    result = ffi_write_to_descriptor(t->descriptor, i);
+    if (result >= 2)
+      result -= 2;
+  } else
+    result = ffi_write_to_descriptor(t->descriptor, osb);
+
+  if (result < 0) {	/* Oops, fatal error. Bye! */
+    close_socket(t);
+    return (-1);
+  } else if (result == 0)	/* Socket buffer full. Try later. */
+    return (0);
+
+  /* Handle snooping: prepend "% " and send to snooper. */
+  if (t->snoop_by)
+    write_to_output(t->snoop_by, "%% %*s%%%%", result, t->output);
+
+  /* The common case: all saved output was handed off to the kernel buffer. */
+  if (result >= t->bufptr) {
+    /*
+     * if we were using a large buffer, put the large buffer on the buffer pool
+     * and switch back to the small one
+     */
+    if (t->large_outbuf) {
+      t->large_outbuf->next = bufpool;
+      bufpool = t->large_outbuf;
+      t->large_outbuf = NULL;
+      t->output = t->small_outbuf;
+    }
+    /* reset total bufspace back to that of a small buffer */
+    t->bufspace = SMALL_BUFSIZE - 1;
+    t->bufptr = 0;
+    *(t->output) = '\0';
+
+    /*
+     * If the overflow message or prompt were partially written, try to save
+     * them. There will be enough space for them if this is true.  'result'
+     * is effectively unsigned here anyway.
+     */
+    if ((unsigned int)result < strlen(osb)) {
+      size_t savetextlen = strlen(osb + result);
+
+      strcat(t->output, osb + result);
+      t->bufptr   -= savetextlen;
+      t->bufspace += savetextlen;
+    }
+
+  } else {
+    /* Not all data in buffer sent.  result < output buffersize. */
+
+    strcpy(t->output, t->output + result);	/* strcpy: OK (overlap) */
+    t->bufptr   -= result;
+    t->bufspace += result;
+  }
+
+  return (result);
+}
 
 /*
  * perform_socket_write: takes a descriptor, a pointer to text, and a
@@ -1849,6 +2032,159 @@ int process_input(struct descriptor_data *t)
   return (1);
 }
 
+int process_ffi_input(struct descriptor_data *t)
+{
+  int buf_length, failed_subst;
+  ssize_t bytes_read;
+  size_t space_left;
+  char *ptr, *read_point, *write_point, *nl_pos = NULL;
+  char tmp[MAX_INPUT_LENGTH];
+
+  /* first, find the point where we left off reading data */
+  buf_length = strlen(t->inbuf);
+  read_point = t->inbuf + buf_length;
+  space_left = MAX_RAW_INPUT_LENGTH - buf_length - 1;
+
+  do {
+    if (space_left <= 0) {
+      log("WARNING: process_input: about to close connection: input overflow");
+      return (-1);
+    }
+
+    // TODO here
+    bytes_read = ffi_read_from_descriptor(t->descriptor, read_point, space_left);
+
+    if (bytes_read < 0)	/* Error, disconnect them. */
+      return (-1);
+    else if (bytes_read == 0)	/* Just blocking, no problems. */
+      return (0);
+
+    /* at this point, we know we got some data from the read */
+
+    *(read_point + bytes_read) = '\0';	/* terminate the string */
+
+    /* search for a newline in the data we just read */
+    for (ptr = read_point; *ptr && !nl_pos; ptr++)
+      if (ISNEWL(*ptr))
+	nl_pos = ptr;
+
+    read_point += bytes_read;
+    space_left -= bytes_read;
+
+/*
+ * on some systems such as AIX, POSIX-standard nonblocking I/O is broken,
+ * causing the MUD to hang when it encounters input not terminated by a
+ * newline.  This was causing hangs at the Password: prompt, for example.
+ * I attempt to compensate by always returning after the _first_ read, instead
+ * of looping forever until a read returns -1.  This simulates non-blocking
+ * I/O because the result is we never call read unless we know from select()
+ * that data is ready (process_input is only called if select indicates that
+ * this descriptor is in the read set).  JE 2/23/95.
+ */
+#if !defined(POSIX_NONBLOCK_BROKEN)
+  } while (nl_pos == NULL);
+#else
+  } while (0);
+
+  if (nl_pos == NULL)
+    return (0);
+#endif /* POSIX_NONBLOCK_BROKEN */
+
+  /*
+   * okay, at this point we have at least one newline in the string; now we
+   * can copy the formatted data to a new array for further processing.
+   */
+
+  read_point = t->inbuf;
+
+  while (nl_pos != NULL) {
+    write_point = tmp;
+    space_left = MAX_INPUT_LENGTH - 1;
+
+    /* The '> 1' reserves room for a '$ => $$' expansion. */
+    for (ptr = read_point; (space_left > 1) && (ptr < nl_pos); ptr++) {
+      if (*ptr == '\b' || *ptr == 127) { /* handle backspacing or delete key */
+	if (write_point > tmp) {
+	  if (*(--write_point) == '$') {
+	    write_point--;
+	    space_left += 2;
+	  } else
+	    space_left++;
+	}
+      } else if (isascii(*ptr) && isprint(*ptr)) {
+	if ((*(write_point++) = *ptr) == '$') {		/* copy one character */
+	  *(write_point++) = '$';	/* if it's a $, double it */
+	  space_left -= 2;
+	} else
+	  space_left--;
+      }
+    }
+
+    *write_point = '\0';
+
+    if ((space_left <= 0) && (ptr < nl_pos)) {
+      char buffer[MAX_INPUT_LENGTH + 64];
+
+      snprintf(buffer, sizeof(buffer), "Line too long.  Truncated to:\r\n%s\r\n", tmp);
+      if (write_to_descriptor(t->descriptor, buffer) < 0)
+	return (-1);
+    }
+    if (t->snoop_by)
+      write_to_output(t->snoop_by, "%% %s\r\n", tmp);
+    failed_subst = 0;
+
+    if (*tmp == '!' && !(*(tmp + 1)))	/* Redo last command. */
+      strcpy(tmp, t->last_input);	/* strcpy: OK (by mutual MAX_INPUT_LENGTH) */
+    else if (*tmp == '!' && *(tmp + 1)) {
+      char *commandln = (tmp + 1);
+      int starting_pos = t->history_pos,
+	  cnt = (t->history_pos == 0 ? HISTORY_SIZE - 1 : t->history_pos - 1);
+
+      skip_spaces(&commandln);
+      for (; cnt != starting_pos; cnt--) {
+	if (t->history[cnt] && is_abbrev(commandln, t->history[cnt])) {
+	  strcpy(tmp, t->history[cnt]);	/* strcpy: OK (by mutual MAX_INPUT_LENGTH) */
+	  strcpy(t->last_input, tmp);	/* strcpy: OK (by mutual MAX_INPUT_LENGTH) */
+          write_to_output(t, "%s\r\n", tmp);
+	  break;
+	}
+        if (cnt == 0)	/* At top, loop to bottom. */
+	  cnt = HISTORY_SIZE;
+      }
+    } else if (*tmp == '^') {
+      if (!(failed_subst = perform_subst(t, t->last_input, tmp)))
+	strcpy(t->last_input, tmp);	/* strcpy: OK (by mutual MAX_INPUT_LENGTH) */
+    } else {
+      strcpy(t->last_input, tmp);	/* strcpy: OK (by mutual MAX_INPUT_LENGTH) */
+      if (t->history[t->history_pos])
+	free(t->history[t->history_pos]);	/* Clear the old line. */
+      t->history[t->history_pos] = strdup(tmp);	/* Save the new. */
+      if (++t->history_pos >= HISTORY_SIZE)	/* Wrap to top. */
+	t->history_pos = 0;
+    }
+
+    if (!failed_subst)
+      write_to_q(tmp, &t->input, 0);
+
+    /* find the end of this line */
+    while (ISNEWL(*nl_pos))
+      nl_pos++;
+
+    /* see if there's another newline in the input buffer */
+    read_point = ptr = nl_pos;
+    for (nl_pos = NULL; *ptr && !nl_pos; ptr++)
+      if (ISNEWL(*ptr))
+	nl_pos = ptr;
+  }
+
+  /* now move the rest of the buffer up to the beginning for the next pass */
+  write_point = t->inbuf;
+  while (*read_point)
+    *(write_point++) = *(read_point++);
+  *write_point = '\0';
+
+  return (1);
+}
 
 
 /* perform substitution for the '^..^' csh-esque syntax orig is the
@@ -1904,6 +2240,7 @@ int perform_subst(struct descriptor_data *t, char *orig, char *subst)
 
 
 
+// TODO: this can just be free_descriptor preceded by CLOSE_SOCKET for telnet clients
 void close_socket(struct descriptor_data *d)
 {
   struct descriptor_data *temp;
@@ -1967,6 +2304,68 @@ void close_socket(struct descriptor_data *d)
   free(d);
 }
 
+// Client agnostic descriptor cleanup
+void free_descriptor(struct descriptor_data *d)
+{
+  struct descriptor_data *temp;
+
+  REMOVE_FROM_LIST(d, descriptor_list, next);
+  flush_queues(d);
+
+  /* Forget snooping */
+  if (d->snooping)
+    d->snooping->snoop_by = NULL;
+
+  if (d->snoop_by) {
+    write_to_output(d->snoop_by, "Your victim is no longer among us.\r\n");
+    d->snoop_by->snooping = NULL;
+  }
+
+  if (d->character) {
+    /* If we're switched, this resets the mobile taken. */
+    d->character->desc = NULL;
+
+    /* Plug memory leak, from Eric Green. */
+    if (!IS_NPC(d->character) && PLR_FLAGGED(d->character, PLR_MAILING) && d->str) {
+      if (*(d->str))
+        free(*(d->str));
+      free(d->str);
+    }
+
+    if (STATE(d) == CON_PLAYING || STATE(d) == CON_DISCONNECT) {
+      struct char_data *link_challenged = d->original ? d->original : d->character;
+
+      /* We are guaranteed to have a person. */
+      act("$n has lost $s link.", TRUE, link_challenged, 0, 0, TO_ROOM);
+      save_char(link_challenged);
+      mudlog(NRM, MAX(LVL_IMMORT, GET_INVIS_LEV(link_challenged)), TRUE, "Closing link to: %s.", GET_NAME(link_challenged));
+    } else {
+      mudlog(CMP, LVL_IMMORT, TRUE, "Losing player: %s.", GET_NAME(d->character) ? GET_NAME(d->character) : "<null>");
+      free_char(d->character);
+    }
+  } else
+    mudlog(CMP, LVL_IMMORT, TRUE, "Losing descriptor without char.");
+
+  /* JE 2/22/95 -- part of my unending quest to make switch stable */
+  if (d->original && d->original->desc)
+    d->original->desc = NULL;
+
+  /* Clear the command history. */
+  if (d->history) {
+    int cnt;
+    for (cnt = 0; cnt < HISTORY_SIZE; cnt++)
+      if (d->history[cnt])
+	free(d->history[cnt]);
+    free(d->history);
+  }
+
+  if (d->showstr_head)
+    free(d->showstr_head);
+  if (d->showstr_count)
+    free(d->showstr_vector);
+
+  free(d);
+}
 
 
 void check_idle_passwords(void)
