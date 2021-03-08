@@ -21,7 +21,7 @@ BINDIR = ../bin
 
 CFLAGS = @CFLAGS@ $(MYFLAGS) $(PROFILE)
 
-LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@
+LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@ @RUSTLIB@
 
 OBJFILES = act.comm.o act.informative.o act.item.o act.movement.o \
 	act.offensive.o act.other.o act.social.o act.wizard.o alias.o ban.o \
@@ -54,10 +54,15 @@ circle:
 	$(MAKE) $(BINDIR)/circle
 
 $(BINDIR)/circle : $(OBJFILES)
-	$(CC) -o $(BINDIR)/circle $(PROFILE) $(OBJFILES) $(LIBS)
+	$(MAKE) ../circlemud_ffi_client/target/release/libcirclemud_ffi_client.a
+	$(CC) -o $(BINDIR)/circle $(PROFILE) $(OBJFILES) $(LIBS) $(CFLAGS)
+
+../circlemud_ffi_client/target/release/libcirclemud_ffi_client.a:
+	cargo build --release --manifest-path=../circlemud_ffi_client/Cargo.toml
 
 clean:
 	rm -f *.o
+	cargo clean --manifest-path=../circlemud_ffi_client/Cargo.toml
 ref:
 #
 # Create the cross reference files
