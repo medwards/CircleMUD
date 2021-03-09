@@ -1379,6 +1379,7 @@ int new_descriptor(socket_t s)
 
   /* initialize descriptor data */
   newd->descriptor = desc;
+  newd->ffi_descriptor = NULL;
   newd->idle_tics = 0;
   newd->output = newd->small_outbuf;
   newd->bufspace = SMALL_BUFSIZE - 1;
@@ -1417,14 +1418,15 @@ int new_ffi_descriptor(int ffi_id)
   struct descriptor_data *newd;
   struct hostent *from;
 
+  struct Descriptor *descriptor = ffi_new_descriptor(CLIENT_FFI);
 
   /* make sure we have room for it */
   for (newd = descriptor_list; newd; newd = newd->next)
     sockets_connected++;
   if (sockets_connected >= max_players) {
     // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
-    ffi_write_to_descriptor(NULL, "Sorry, CircleMUD is full right now... please try again later!\r\n");
-    ffi_close_descriptor(NULL);
+    ffi_write_to_descriptor(descriptor, "Sorry, CircleMUD is full right now... please try again later!\r\n");
+    ffi_close_descriptor(descriptor);
     return (0);
   }
 
@@ -1437,7 +1439,7 @@ int new_ffi_descriptor(int ffi_id)
   // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
   /* determine if the site is banned */
   if (isbanned(newd->host) == BAN_ALL) {
-    ffi_close_descriptor(NULL);
+    ffi_close_descriptor(descriptor);
     mudlog(CMP, LVL_GOD, TRUE, "Connection attempt denied from [%s]", newd->host);
     free(newd);
     return (0);
@@ -1453,7 +1455,7 @@ int new_ffi_descriptor(int ffi_id)
 
   /* initialize descriptor data */
   newd->descriptor = NULL;
-  newd->ffi_id = ffi_id;
+  newd->ffi_descriptor = descriptor;
   newd->idle_tics = 0;
   newd->output = newd->small_outbuf;
   newd->bufspace = SMALL_BUFSIZE - 1;
