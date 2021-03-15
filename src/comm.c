@@ -129,7 +129,9 @@ socket_t init_socket(ush_int port);
 int new_descriptor(socket_t s);
 int get_max_players(void);
 int process_output(struct descriptor_data *t);
+int process_ffi_output(struct DescriptorManager *manager, struct descriptor_data *t);
 int process_input(struct descriptor_data *t);
+int process_ffi_input(struct DescriptorManager *manager, struct descriptor_data *t);
 void timediff(struct timeval *diff, struct timeval *a, struct timeval *b);
 void timeadd(struct timeval *sum, struct timeval *a, struct timeval *b);
 void flush_queues(struct descriptor_data *d);
@@ -378,7 +380,10 @@ void init_game(ush_int port)
 
   log("Closing all sockets.");
   while (descriptor_list)
-    close_socket(descriptor_list);
+    if (descriptor_list->client_type == CLIENT_TELNET)
+      close_socket(descriptor_list);
+    else
+      close_ffi_descriptor(descriptor_list);
 
   CLOSE_SOCKET(mother_desc);
   fclose(player_fl);
@@ -605,22 +610,25 @@ void game_loop(socket_t mother_desc)
   gettimeofday(&last_time, (struct timezone *) 0);
 
   bool prototype = 0; // trigger prototype ffi client creation once
+  struct DescriptorManager* manager = ffi_create_descriptor_manager();
 
   /* The Main Loop.  The Big Cheese.  The Top Dog.  The Head Honcho.  The.. */
   while (!circle_shutdown) {
 
     /* Sleep if we don't have any connections */
     if (descriptor_list == NULL) {
-      log("No connections.  Going to sleep.");
+      //log("No connections.  Going to sleep.");
       FD_ZERO(&input_set);
       FD_SET(mother_desc, &input_set);
-      if (prototype && select(mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
+      if (0 && select(mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
 	if (errno == EINTR)
 	  log("Waking up to process signal.");
 	else
 	  perror("SYSERR: Select coma");
-      } else
-	log("New connection.  Waking up.");
+      } else {
+        //log("New connection.  Waking up.");
+      }
+
       gettimeofday(&last_time, (struct timezone *) 0);
     }
     /* Set up the input, output, and exception sets for select(). */
@@ -688,11 +696,7 @@ void game_loop(socket_t mother_desc)
     /* If there are new connections waiting, accept them. */
     if (FD_ISSET(mother_desc, &input_set))
       new_descriptor(mother_desc);
-
-    if (!prototype) {
-      prototype = 1;
-      new_ffi_descriptor(0);
-    }
+    new_ffi_descriptor(manager, 0);
 
     /* Kick out the freaky folks in the exception set and marked for close */
     for (d = descriptor_list; d; d = next_d) {
@@ -708,12 +712,15 @@ void game_loop(socket_t mother_desc)
     /* Process descriptors with input pending */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (d->client_type == CLIENT_TELNET && FD_ISSET(d->descriptor, &input_set))
+      if (d->client_type == CLIENT_TELNET && FD_ISSET(d->descriptor, &input_set)) {
 	if (process_input(d) < 0)
 	  close_socket(d);
+      }
       else if (d->client_type == CLIENT_FFI)
-	if (process_ffi_input(d) < 0)
-	  free_descriptor(d);
+      {
+	if (process_ffi_input(manager, d) < 0)
+          close_ffi_descriptor(manager, d);
+      }
     }
 
     /* Process commands we just read from process_input */
@@ -778,7 +785,7 @@ void game_loop(socket_t mother_desc)
       if (*(d->output) && d->client_type == CLIENT_FFI) {
 	/* Output for this player is ready. */
 
-        process_ffi_output(d);
+        process_ffi_output(manager, d);
         if (d->bufptr == 0)	/* All output sent. */
           d->has_prompt = TRUE;
       }
@@ -791,7 +798,7 @@ void game_loop(socket_t mother_desc)
 	d->has_prompt = TRUE;
       }
       if (!d->has_prompt && d->bufptr == 0 && d->client_type == CLIENT_FFI) {
-	ffi_write_to_descriptor(d->descriptor, make_prompt(d));
+	ffi_write_to_descriptor(manager, d->ffi_descriptor, make_prompt(d));
 	d->has_prompt = TRUE;
       }
     }
@@ -802,7 +809,7 @@ void game_loop(socket_t mother_desc)
       if (d->client_type == CLIENT_TELNET && (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT))
 	close_socket(d);
       if (d->client_type == CLIENT_FFI && (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT))
-	free_descriptor(d);
+        close_ffi_descriptor(manager, d);
     }
 
     /*
@@ -1378,6 +1385,7 @@ int new_descriptor(socket_t s)
 #endif
 
   /* initialize descriptor data */
+  newd->client_type = CLIENT_TELNET;
   newd->descriptor = desc;
   newd->ffi_descriptor = NULL;
   newd->idle_tics = 0;
@@ -1411,22 +1419,26 @@ int new_descriptor(socket_t s)
 
 /* simplified new_descriptor for the ffi client */
 // TODO: move to a client specific header
-int new_ffi_descriptor(int ffi_id)
+int new_ffi_descriptor(struct DescriptorManager* manager, int ffi_id)
 {
   int sockets_connected = 0;
   static int last_desc = 0;	/* last descriptor number */
   struct descriptor_data *newd;
   struct hostent *from;
 
-  struct Descriptor *descriptor = ffi_new_descriptor(CLIENT_FFI);
+  struct DescriptorId *descriptor_id = ffi_new_descriptor(manager, CLIENT_FFI);
+  if (descriptor_id == NULL) {
+    //log("Failed to get new FFI descriptor");
+    return (1);
+  }
 
   /* make sure we have room for it */
   for (newd = descriptor_list; newd; newd = newd->next)
     sockets_connected++;
   if (sockets_connected >= max_players) {
     // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
-    ffi_write_to_descriptor(descriptor, "Sorry, CircleMUD is full right now... please try again later!\r\n");
-    ffi_close_descriptor(descriptor);
+    ffi_write_to_descriptor(manager, descriptor_id, "Sorry, CircleMUD is full right now... please try again later!\r\n");
+    ffi_close_descriptor(manager, descriptor_id);
     return (0);
   }
 
@@ -1439,7 +1451,7 @@ int new_ffi_descriptor(int ffi_id)
   // TODO: this used to write and close socket before initializing all the buffers, come back to this after introducing a real ffi_new_client impl
   /* determine if the site is banned */
   if (isbanned(newd->host) == BAN_ALL) {
-    ffi_close_descriptor(descriptor);
+    ffi_close_descriptor(manager, descriptor_id);
     mudlog(CMP, LVL_GOD, TRUE, "Connection attempt denied from [%s]", newd->host);
     free(newd);
     return (0);
@@ -1454,8 +1466,9 @@ int new_ffi_descriptor(int ffi_id)
 #endif
 
   /* initialize descriptor data */
+  newd->client_type = CLIENT_FFI;
   newd->descriptor = NULL;
-  newd->ffi_descriptor = descriptor;
+  newd->ffi_descriptor = descriptor_id;
   newd->idle_tics = 0;
   newd->output = newd->small_outbuf;
   newd->bufspace = SMALL_BUFSIZE - 1;
@@ -1580,7 +1593,7 @@ int process_output(struct descriptor_data *t)
   return (result);
 }
 
-int process_ffi_output(struct descriptor_data *t) {
+int process_ffi_output(struct DescriptorManager* manager, struct descriptor_data *t) {
   char i[MAX_SOCK_BUF], *osb = i + 2;
   int result;
 
@@ -1607,14 +1620,14 @@ int process_ffi_output(struct descriptor_data *t) {
    */
   if (t->has_prompt) {
     t->has_prompt = FALSE;
-    result = ffi_write_to_descriptor(t->descriptor, i);
+    result = ffi_write_to_descriptor(manager, t->ffi_descriptor, i);
     if (result >= 2)
       result -= 2;
   } else
-    result = ffi_write_to_descriptor(t->descriptor, osb);
+    result = ffi_write_to_descriptor(manager, t->ffi_descriptor, osb);
 
   if (result < 0) {	/* Oops, fatal error. Bye! */
-    close_socket(t);
+    close_ffi_descriptor(manager, t);
     return (-1);
   } else if (result == 0)	/* Socket buffer full. Try later. */
     return (0);
@@ -2034,7 +2047,7 @@ int process_input(struct descriptor_data *t)
   return (1);
 }
 
-int process_ffi_input(struct descriptor_data *t)
+int process_ffi_input(struct DescriptorManager *manager, struct descriptor_data *t)
 {
   int buf_length, failed_subst;
   ssize_t bytes_read;
@@ -2054,7 +2067,7 @@ int process_ffi_input(struct descriptor_data *t)
     }
 
     // TODO here
-    bytes_read = ffi_read_from_descriptor(t->descriptor, read_point, space_left);
+    bytes_read = ffi_read_from_descriptor(manager, t->ffi_descriptor, read_point, space_left);
 
     if (bytes_read < 0)	/* Error, disconnect them. */
       return (-1);
@@ -2241,7 +2254,6 @@ int perform_subst(struct descriptor_data *t, char *orig, char *subst)
 }
 
 
-
 // TODO: this can just be free_descriptor preceded by CLOSE_SOCKET for telnet clients
 void close_socket(struct descriptor_data *d)
 {
@@ -2283,6 +2295,7 @@ void close_socket(struct descriptor_data *d)
       free_char(d->character);
     }
   } else
+    // TODO: if a telnet client connects and quits this appears to kill the ffi client
     mudlog(CMP, LVL_IMMORT, TRUE, "Losing descriptor without char.");
 
   /* JE 2/22/95 -- part of my unending quest to make switch stable */
@@ -2304,6 +2317,13 @@ void close_socket(struct descriptor_data *d)
     free(d->showstr_vector);
 
   free(d);
+}
+
+
+void close_ffi_descriptor(struct DescriptorManager *manager, struct descriptor_data *d) {
+  struct DescriptorId *identifier = d->ffi_descriptor;
+  free_descriptor(d);
+  ffi_close_descriptor(manager, identifier);
 }
 
 // Client agnostic descriptor cleanup

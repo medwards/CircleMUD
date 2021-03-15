@@ -3032,7 +3032,7 @@ done
 test -n "$CARGO" || CARGO="yes"
 
 test "$CARGO" != "cargo" && as_fn_error $? "Required program 'cargo' not found. You can install it from https://www.rust-lang.org/" "$LINENO" 5
-RUSTLIB="-L ../circlemud_ffi_client/target/release -lcirclemud_ffi_client -lpthread -ldl"
+RUSTLIB="-L ../circlemud_ffi_client/target/release -lcirclemud_ffi_client -lpthread -ldl -lm"
 
 if test $ac_cv_c_compiler_gnu = yes; then
 

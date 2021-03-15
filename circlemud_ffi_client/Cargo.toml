@@ -7,6 +7,15 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+slack-morphism-models = "0.6.1"
+slack-morphism-hyper = "0.6.1"
+slack-morphism = "0.6.1"
+futures = "0.3"
+tokio = { version = "1.0", features = ["full"] }
+hyper = { version ="0.14", features = ["full"] }
+log = "0.4"
+fern = { version = "0.6", features = ["colored"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [lib]
 crate-type = ["staticlib"]
