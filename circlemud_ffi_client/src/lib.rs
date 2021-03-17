@@ -13,8 +13,11 @@ mod slack_descriptor;
 #[no_mangle]
 pub extern "C" fn ffi_create_descriptor_manager() -> *mut slack_descriptor::SlackDescriptorManager {
     Box::into_raw(Box::new(slack_descriptor::SlackDescriptorManager::new(
-        "signing_secret",
-        "bot_token".into(),
+        &std::env::var("SLACK_SIGNING_SECRET")
+            .expect("SLACK_SIGNING_SECRET not in the environment"),
+        std::env::var("SLACK_BOT_TOKEN")
+            .expect("SLACK_BOT_TOKEN not in the environment")
+            .into(),
     )))
 }
 
