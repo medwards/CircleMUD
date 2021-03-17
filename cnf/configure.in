@@ -4,6 +4,7 @@ AC_SUBST(MYFLAGS)
 AC_SUBST(NETLIB)
 AC_SUBST(RUSTLIB)
 AC_SUBST(CRYPTLIB)
+AC_SUBST(FFI_CLIENT_PATH)
 
 AC_CONFIG_HEADER(src/conf.h)
 AC_DEFINE(CIRCLE_UNIX)
@@ -15,7 +16,8 @@ dnl Checks for programs.
 AC_PROG_CC
 AC_CHECK_PROGS(CARGO, cargo, yes)
 test "$CARGO" != "cargo" && AC_MSG_ERROR([Required program 'cargo' not found. You can install it from https://www.rust-lang.org/])
-RUSTLIB="-L ../circlemud_ffi_client/target/release -lcirclemud_ffi_client -lpthread -ldl -lm"
+FFI_CLIENT_PATH="../circlemud_ffi_client"
+RUSTLIB="-L $FFI_CLIENT_PATH/target/release -lcirclemud_ffi_client -lpthread -ldl -lm"
 
 dnl If we're using gcc, use gcc options.
 dnl If not, test for various common switches to make a 'cc' compiler

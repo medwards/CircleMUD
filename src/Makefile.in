@@ -13,6 +13,9 @@ MYFLAGS = @MYFLAGS@
 #flags for profiling (see hacker.doc for more information)
 PROFILE = 
 
+# path to FFI Rust library
+FFI_CLIENT_PATH = @FFI_CLIENT_PATH@
+
 ##############################################################################
 # Do Not Modify Anything Below This Line (unless you know what you're doing) #
 ##############################################################################
@@ -41,28 +44,29 @@ CXREF_FILES = act.comm.c act.informative.c act.item.c act.movement.c \
 
 default: all
 
-all: .accepted
-	$(MAKE) $(BINDIR)/circle
-	$(MAKE) utils
+all: .accepted circle utils
 
 .accepted:
 	@./licheck @MORE@
 
 utils: .accepted
 	(cd util; $(MAKE) all)
-circle:
-	$(MAKE) $(BINDIR)/circle
 
-$(BINDIR)/circle : $(OBJFILES)
-	$(MAKE) ../circlemud_ffi_client/target/release/libcirclemud_ffi_client.a
+circle: $(BINDIR)/circle
+
+$(BINDIR)/circle : $(OBJFILES) ffi_client
 	$(CC) -o $(BINDIR)/circle $(PROFILE) $(OBJFILES) $(LIBS) $(CFLAGS)
 
-../circlemud_ffi_client/target/release/libcirclemud_ffi_client.a:
-	cargo build --release --manifest-path=../circlemud_ffi_client/Cargo.toml
+.PHONY: ffi_client $(FFI_CLIENT_PATH)/target/release/libcirclemud_ffi_client.a
+
+ffi_client: $(FFI_CLIENT_PATH)/target/release/libcirclemud_ffi_client.a
+
+$(FFI_CLIENT_PATH)/target/release/libcirclemud_ffi_client.a:
+	cargo build --release --manifest-path=$(FFI_CLIENT_PATH)/Cargo.toml
 
 clean:
 	rm -f *.o
-	cargo clean --manifest-path=../circlemud_ffi_client/Cargo.toml
+	cargo clean --manifest-path=$(FFI_CLIENT_PATH)/Cargo.toml
 ref:
 #
 # Create the cross reference files

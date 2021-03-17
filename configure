@@ -633,6 +633,7 @@ LDFLAGS
 CFLAGS
 CC
 MORE
+FFI_CLIENT_PATH
 CRYPTLIB
 RUSTLIB
 NETLIB
@@ -2151,6 +2152,7 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
+
 ac_config_headers="$ac_config_headers src/conf.h"
 
 $as_echo "#define CIRCLE_UNIX 1" >>confdefs.h
@@ -3032,7 +3034,8 @@ done
 test -n "$CARGO" || CARGO="yes"
 
 test "$CARGO" != "cargo" && as_fn_error $? "Required program 'cargo' not found. You can install it from https://www.rust-lang.org/" "$LINENO" 5
-RUSTLIB="-L ../circlemud_ffi_client/target/release -lcirclemud_ffi_client -lpthread -ldl -lm"
+FFI_CLIENT_PATH="../circlemud_ffi_client"
+RUSTLIB="-L $FFI_CLIENT_PATH/target/release -lcirclemud_ffi_client -lpthread -ldl -lm"
 
 if test $ac_cv_c_compiler_gnu = yes; then
 
