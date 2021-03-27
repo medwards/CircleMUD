@@ -1,6 +1,8 @@
-# CircleMUD 3.0-modern
+# CircleMUD 3.1-modern
 
-An update to CircleMUD 3.0 to enable easier integration with new frontends. Included is integration with Slack and a trait interface that allows implementing other integration transparently to the legacy CircleMUD codebase.
+An update to CircleMUD 3.1 to enable easier integration with new frontends. Included is integration with Slack and a trait interface that allows implementing other integration transparently to the legacy CircleMUD codebase.
+
+See `README` for the original instructions.
 
 ## Building
 
@@ -13,6 +15,8 @@ make
 ```
 
 ## Running
+
+Copy `lib` and `bin` to a server that is accessible over the internet. You do not require this if you are exclusively using telnet.
 
 ```
 SLACK_SIGNING_SECRET=123 SLACK_BOT_TOKEN=xoxb-123 ./bin/circle
