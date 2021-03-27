@@ -230,7 +230,10 @@ async fn create_server(
     descriptors: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn descriptor::Descriptor>>>>>>,
     send_channels: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 80));
+    let addr = std::env::var("SLACK_SOCKET_ADDR")
+        .unwrap_or("127.0.0.1:8000".to_owned())
+        .parse()
+        .expect("Invalid SLACK_SOCKET_ADDR provided");
     info!("Loading server: {}", addr);
 
     async fn your_others_routes(
