@@ -1,10 +1,9 @@
 use std::ffi::CStr;
-use std::io;
-use std::os::raw::{c_char, c_void};
+use std::os::raw::c_char;
 use std::ptr::copy_nonoverlapping;
 
 mod descriptor;
-use descriptor::{/*ByteStreamDescriptor,*/ Descriptor, DescriptorId, ErrorCode};
+use descriptor::{/*ByteStreamDescriptor,*/ DescriptorId, DescriptorManager, ErrorCode};
 mod slack_descriptor;
 
 // "descriptor" will be an identifier the ffi client can use to determine which user this request
@@ -27,10 +26,14 @@ pub extern "C" fn ffi_new_descriptor(
     descriptor_type: usize,
 ) -> *const DescriptorId {
     unsafe {
-        match manager.as_mut().expect("manager was null").new_descriptor() {
+        match manager
+            .as_mut()
+            .expect("manager was null")
+            .get_new_descriptor()
+        {
             Some(descriptor) => {
                 println!("Found new descriptor: {:?}", descriptor);
-                Box::into_raw(Box::new(descriptor.to_string()))
+                Box::into_raw(Box::new(descriptor.clone()))
             }
             None => std::ptr::null(),
         }
@@ -71,11 +74,10 @@ pub extern "C" fn ffi_write_to_descriptor(
         let manager = manager.as_mut().expect("manager was null");
         let identifier = identifier.as_ref().expect("descriptor identifier was null");
         manager
-            .descriptors
-            .lock()
-            .expect("Unable to lock descriptors")
-            .get_mut(identifier)
+            .get_descriptor(&identifier)
             .expect("descriptor was not found")
+            .lock()
+            .expect("Failed to lock descriptor")
             .write(content.to_string_lossy().to_string())
             .ok()
             .unwrap_or(0) // TODO: this should return -1 for failures
@@ -97,11 +99,10 @@ pub extern "C" fn ffi_read_from_descriptor(
         let manager = manager.as_mut().expect("descriptor was null");
         let identifier = identifier.as_ref().expect("descriptor identifier was null");
         let read_bytes: usize = match manager
-            .descriptors
-            .lock()
-            .expect("Unable to lock descriptors")
-            .get_mut(identifier)
+            .get_descriptor(&identifier)
             .expect("descriptor was not found")
+            .lock()
+            .expect("Failed to lock descriptor")
             .read(&mut buffer[0..space_left])
         {
             Ok(n) => n,
