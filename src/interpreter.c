@@ -1447,7 +1447,7 @@ void nanny(struct descriptor_data *d, char *arg)
 		(load_result > 1) ? "S" : "", CCNRM(d->character, C_SPR));
 	GET_BAD_PWS(d->character) = 0;
       }
-      write_to_output(d, "\r\n*** PRESS RETURN: ");
+      write_to_output(d, "\r\n*** TYPE CONTINUE OR PRESS RETURN: ");
       STATE(d) = CON_RMOTD;
     }
     break;
@@ -1525,7 +1525,7 @@ void nanny(struct descriptor_data *d, char *arg)
     /* Now GET_NAME() will work properly. */
     init_char(d->character);
     save_char(d->character);
-    write_to_output(d, "%s\r\n*** PRESS RETURN: ", motd);
+    write_to_output(d, "%s\r\n*** TYPE CONTINUE OR PRESS RETURN: ", motd);
     STATE(d) = CON_RMOTD;
 
     mudlog(NRM, LVL_IMMORT, TRUE, "%s [%s] new player.", GET_NAME(d->character), d->host);
