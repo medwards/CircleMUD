@@ -76,8 +76,6 @@ pub extern "C" fn ffi_write_to_descriptor(
         manager
             .get_descriptor(&identifier)
             .expect("descriptor was not found")
-            .lock()
-            .expect("Failed to lock descriptor")
             .write(content.to_string_lossy().to_string())
             .ok()
             .unwrap_or(0) // TODO: this should return -1 for failures
@@ -100,8 +98,6 @@ pub extern "C" fn ffi_read_from_descriptor(
         let identifier = identifier.as_ref().expect("descriptor identifier was null");
         let read_bytes: usize = match manager
             .get_descriptor(&identifier)
-            .expect("descriptor was not found")
-            .lock()
             .expect("Failed to lock descriptor")
             .read(&mut buffer[0..space_left])
         {

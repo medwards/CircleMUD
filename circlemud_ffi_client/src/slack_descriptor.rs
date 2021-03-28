@@ -14,6 +14,7 @@ use tokio::runtime::Runtime;
 use std::sync::Arc;
 
 use crate::descriptor;
+use crate::descriptor::Descriptor;
 
 // Manager launches the Events API listener and waits
 // on receiving a message
@@ -33,35 +34,30 @@ use crate::descriptor;
 pub struct SlackDescriptorManager {
     server: thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
     bot_token: SlackApiTokenValue,
-    last_seen_descriptors: HashSet<String>,
-    descriptors: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn descriptor::Descriptor>>>>>>,
-    send_channels: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
+    descriptors: HashMap<String, Box<dyn descriptor::Descriptor>>,
+    new_descriptors: mpsc::Receiver<SlackDescriptor>,
 }
 
 impl SlackDescriptorManager {
     pub fn new(signing_secret: &str, bot_token: SlackApiTokenValue) -> Self {
         // TODO: server admins will want to specify port, socket addr, other stuff
-        let descriptors = Arc::new(Mutex::new(HashMap::new()));
-        let send_channels = Arc::new(Mutex::new(HashMap::new()));
+        let (new_descriptors_send, new_descriptors) = mpsc::channel();
         SlackDescriptorManager {
             server: SlackDescriptorManager::launch_server(
                 signing_secret.to_owned(),
                 SlackApiToken::new(bot_token.clone()),
-                descriptors.clone(),
-                send_channels.clone(),
+                new_descriptors_send,
             ),
             bot_token: bot_token,
-            last_seen_descriptors: HashSet::new(),
-            descriptors: descriptors,
-            send_channels: send_channels,
+            descriptors: HashMap::new(),
+            new_descriptors: new_descriptors,
         }
     }
 
     fn launch_server(
         signing_secret: String,
         bot_token: SlackApiToken,
-        descriptors: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn descriptor::Descriptor>>>>>>,
-        send_channels: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
+        new_descriptors_sender: mpsc::Sender<SlackDescriptor>,
     ) -> thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> {
         thread::spawn(|| {
             let runtime = Runtime::new().expect("Unable to create Runtime");
@@ -70,14 +66,7 @@ impl SlackDescriptorManager {
                 init_log()?;
                 let hyper_connector = SlackClientHyperConnector::new();
                 let client: Arc<SlackHyperClient> = Arc::new(SlackClient::new(hyper_connector));
-                create_server(
-                    client,
-                    signing_secret,
-                    bot_token,
-                    descriptors,
-                    send_channels,
-                )
-                .await
+                create_server(client, signing_secret, bot_token, new_descriptors_sender).await
             })
         })
     }
@@ -86,58 +75,30 @@ impl SlackDescriptorManager {
 impl descriptor::DescriptorManager for SlackDescriptorManager {
     fn get_new_descriptor(&mut self) -> Option<descriptor::DescriptorId> {
         // see if there are any new descriptors and return them
-        let current_identifiers: HashSet<String> = self
-            .descriptors
-            .lock()
-            .expect("unable to get lock on descriptors")
-            .keys()
-            .map(String::clone)
-            .collect();
-        let new_identifiers: HashSet<_> = current_identifiers
-            .difference(&self.last_seen_descriptors)
-            .collect();
-        if new_identifiers.is_empty() {
-            None
-        } else {
-            info!("Found {:?} new descriptors", new_identifiers);
-            let new_identifier = new_identifiers
-                .iter()
-                .next()
-                .expect("unexpectedly empty new_identifiers")
-                .to_string();
-            info!("Returning {:?}", new_identifier);
-            self.last_seen_descriptors.insert(new_identifier.clone());
-            Some(descriptor::DescriptorId {
-                identifier: new_identifier,
-                descriptor_type: "SLACK".to_owned(),
-            })
+        match self.new_descriptors.try_recv() {
+            Ok(descriptor) => {
+                let ret = descriptor.identifier().clone();
+                self.descriptors
+                    .insert(ret.identifier.clone(), Box::new(descriptor));
+                Some(ret)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(_) => panic!("Channel for receiving new SlackDescriptors unexpectedly closed"),
         }
     }
 
     fn get_descriptor(
         &mut self,
         descriptor: &descriptor::DescriptorId,
-    ) -> Option<Arc<Mutex<Box<dyn descriptor::Descriptor>>>> {
-        self.descriptors
-            .lock()
-            .expect("Unable to lock descriptors")
-            .get_mut(&descriptor.identifier)
-            .cloned()
+    ) -> Option<&mut Box<dyn descriptor::Descriptor>> {
+        self.descriptors.get_mut(&descriptor.identifier)
     }
 
     fn close_descriptor(&mut self, descriptor: &descriptor::DescriptorId) {
         info!("closing {:#?}", descriptor);
-        let mut descriptors = self
-            .descriptors
-            .lock()
-            .expect("unable to get lock on descriptors");
-        descriptors.remove(&descriptor.identifier);
-        let mut send_channels = self
-            .send_channels
-            .lock()
-            .expect("unable to get lock on send channels");
-        send_channels.remove(&descriptor.identifier);
-        self.last_seen_descriptors.remove(&descriptor.identifier);
+        self.descriptors.remove(&descriptor.identifier);
+        // Notify new_descriptor_senders that the descriptor is gone (and therefore the message
+        // receiver)?
     }
 }
 
@@ -145,8 +106,8 @@ async fn push_events_handler(
     event: SlackPushEvent,
     _client: Arc<SlackHyperClient>,
     bot_token: &SlackApiToken,
-    descriptors: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn descriptor::Descriptor>>>>>>,
-    send_channels: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
+    new_descriptors_sender: Arc<Mutex<mpsc::Sender<SlackDescriptor>>>,
+    message_senders: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
 ) {
     info!("{}", display_push_event(&event));
     debug!("{:#?}", event);
@@ -156,41 +117,65 @@ async fn push_events_handler(
                 if channel_type == SlackChannelType("im".to_owned())
                     && message.sender.bot_id.is_none()
                 {
-                    let mut senders = send_channels
+                    let mut message_senders = message_senders
                         .lock()
                         .expect("Unable to get lock for senders hashmap");
                     if let Some(channel) = message.origin.channel {
                         let key = channel.to_string();
-                        let mut descriptors = descriptors
-                            .lock()
-                            .expect("Unable to get lock for senders hashmap");
-                        if !senders.contains_key(&key) && !descriptors.contains_key(&key) {
-                            let (sender, receiver) = mpsc::channel();
-                            senders.insert(key.clone(), sender);
-                            descriptors.insert(
-                                key.clone(),
-                                Arc::new(Mutex::new(Box::new(SlackDescriptor::new(
-                                    channel.clone(),
-                                    receiver,
-                                    bot_token.clone(),
-                                )))),
+                        if !message_senders.contains_key(&key) {
+                            insert_new_session_for_channel(
+                                channel.clone(),
+                                bot_token.clone(),
+                                new_descriptors_sender,
+                                &mut message_senders,
                             );
                             info!("New Events connection from {:?}", channel);
                             // Ignore this message that added the channel (it'll be junk)
                         } else if let Some(content) = message.content {
                             // content can be None if its message.subtype is MessageDeleted
-                            senders
+                            match message_senders
                                 .get(&key)
                                 .expect("Sender went missing")
                                 .send(content.clone())
-                                .expect("Unable to send message over channel");
-                            info!("Sent event from {:?} to descriptor", channel);
+                            {
+                                Ok(()) => info!("Sent event from {:?} to descriptor", channel),
+                                Err(e) => {
+                                    insert_new_session_for_channel(
+                                        channel.clone(),
+                                        bot_token.clone(),
+                                        new_descriptors_sender,
+                                        &mut message_senders,
+                                    );
+                                    info!(
+                                        "Old events connection failed for {:?}, creating a new one",
+                                        channel
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+fn insert_new_session_for_channel(
+    channel: SlackChannelId,
+    bot_token: SlackApiToken,
+    new_descriptors_sender: Arc<Mutex<mpsc::Sender<SlackDescriptor>>>,
+    message_senders: &mut HashMap<String, mpsc::Sender<SlackMessageContent>>,
+) {
+    let (sender, receiver) = mpsc::channel();
+    message_senders.insert(channel.to_string(), sender);
+    new_descriptors_sender
+        .lock()
+        .expect("Unable to lock SlackDescriptor sender")
+        .send(SlackDescriptor::new(channel.clone(), receiver, bot_token))
+        .expect(&format!(
+            "Unable to send new SlackDescriptor {:?} to SlackDescriptorManager",
+            channel
+        ));
 }
 
 fn display_push_event(event: &SlackPushEvent) -> String {
@@ -227,8 +212,7 @@ async fn create_server(
     client: Arc<SlackHyperClient>,
     signing_secret: String,
     bot_token: SlackApiToken,
-    descriptors: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn descriptor::Descriptor>>>>>>,
-    send_channels: Arc<Mutex<HashMap<String, mpsc::Sender<SlackMessageContent>>>>,
+    new_descriptors_sender: mpsc::Sender<SlackDescriptor>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::env::var("SLACK_SOCKET_ADDR")
         .unwrap_or("127.0.0.1:8000".to_owned())
@@ -245,19 +229,22 @@ async fn create_server(
     }
 
     let push_events_config = Arc::new(SlackPushEventsListenerConfig::new(signing_secret));
+    let message_senders = Arc::new(Mutex::new(HashMap::new()));
+    // TODO: Why isn't the original just cloned so there is a new Sender per thread
+    let new_descriptors_sender = Arc::new(Mutex::new(new_descriptors_sender));
 
     // TODO: all of this nested closure scopes is some black magic: come back and understand this
     let wrapped_push_events_handler = move |event, client| {
-        let descriptors_clone = descriptors.clone();
-        let send_channels_clone = send_channels.clone();
+        let message_senders_clone = message_senders.clone();
+        let new_descriptors_sender_clone = new_descriptors_sender.clone();
         let bot_token_clone = bot_token.clone();
         async move {
             push_events_handler(
                 event,
                 client,
                 &bot_token_clone,
-                descriptors_clone,
-                send_channels_clone,
+                new_descriptors_sender_clone,
+                message_senders_clone,
             )
             .await
         }

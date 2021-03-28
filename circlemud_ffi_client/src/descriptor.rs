@@ -5,10 +5,7 @@ pub type ErrorCode = usize;
 
 pub trait DescriptorManager {
     fn get_new_descriptor(&mut self) -> Option<DescriptorId>;
-    fn get_descriptor(
-        &mut self,
-        descriptor: &DescriptorId,
-    ) -> Option<Arc<Mutex<Box<dyn Descriptor>>>>;
+    fn get_descriptor(&mut self, descriptor: &DescriptorId) -> Option<&mut Box<dyn Descriptor>>;
     fn close_descriptor(&mut self, identifier: &DescriptorId);
 }
 
