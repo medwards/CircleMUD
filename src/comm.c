@@ -2067,9 +2067,9 @@ int process_ffi_input(struct DescriptorManager *manager, struct descriptor_data 
     }
 
     // TODO here
-    bytes_read = ffi_read_from_descriptor(manager, t->ffi_descriptor, read_point, space_left);
+    ssize_t error = ffi_read_from_descriptor(manager, t->ffi_descriptor, read_point, space_left, bytes_read);
 
-    if (bytes_read < 0)	/* Error, disconnect them. */
+    if (error < 0)	/* Error, disconnect them. */
       return (-1);
     else if (bytes_read == 0)	/* Just blocking, no problems. */
       return (0);

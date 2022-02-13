@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Result as IoResult, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
 pub type ErrorCode = usize;
@@ -9,11 +9,8 @@ pub trait DescriptorManager {
     fn close_descriptor(&mut self, identifier: &DescriptorId);
 }
 
-// TODO: this should probably just require the Read trait
-pub trait Descriptor: Send + Sync {
+pub trait Descriptor: Send + Sync + Read + Write {
     fn identifier(&self) -> &DescriptorId;
-    fn read(&mut self, read_point: &mut [u8]) -> Result<usize, ErrorCode>;
-    fn write(&mut self, content: String) -> Result<usize, ErrorCode>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,13 +50,20 @@ impl Descriptor for ByteStreamDescriptor {
     fn identifier(&self) -> &DescriptorId {
         unimplemented!()
     }
+}
 
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ErrorCode> {
-        // TODO: don't silently drop the error
-        self.reader.read(buf).map_err(|e| 0)
+impl Read for ByteStreamDescriptor {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl Write for ByteStreamDescriptor {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        self.writer.write(buf)
     }
 
-    fn write(&mut self, content: String) -> Result<usize, ErrorCode> {
-        self.writer.write(content.as_bytes()).map_err(|e| 1)
+    fn flush(&mut self) -> IoResult<()> {
+        self.writer.flush()
     }
 }

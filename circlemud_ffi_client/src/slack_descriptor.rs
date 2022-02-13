@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Result as IoResult, Write};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread;
@@ -362,8 +363,11 @@ impl descriptor::Descriptor for SlackDescriptor {
     fn identifier(&self) -> &descriptor::DescriptorId {
         &self.identifier
     }
+}
 
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, descriptor::ErrorCode> {
+impl Read for SlackDescriptor {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        // TODO: read from a local buffer before fetching from the channel
         let temp = self
             .input_channel
             .lock()
@@ -374,34 +378,44 @@ impl descriptor::Descriptor for SlackDescriptor {
                 let text_raw = format!("{}\n", content.text.expect("text content was empty")); // CircleMUD expects newline delimiters
                 let text = text_raw.as_bytes();
                 if text.len() > buf.len() {
-                    // TODO: do this properly
-                    println!(
-                        "ERROR got slack message bigger than buffer CircleMUD allocated ({} > {}",
-                        text.len(),
-                        buf.len()
-                    );
-                    return Err(1);
+                    // TODO: store the excess in a local growable buffer
+                    unimplemented!();
                 }
                 let common_length = std::cmp::min(text.len(), buf.len());
                 buf[0..common_length].copy_from_slice(&text[0..common_length]);
                 Ok(common_length)
             }
             Err(mpsc::TryRecvError::Empty) => Ok(0),
-            Err(_) => Err(2),
+            Err(mpsc::TryRecvError::Disconnected) => Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "SlackDescriptorManager closed the message channel",
+            )),
         }
     }
+}
 
-    fn write(&mut self, content: String) -> Result<usize, descriptor::ErrorCode> {
+impl Write for SlackDescriptor {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        let text = std::str::from_utf8(buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
+            .to_string();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()
             .expect("Failed to create local runtime");
-        match runtime
-            .block_on(self.send_message(SlackMessageContent::new().with_text(content.clone())))
-        {
-            Ok(()) => Ok(content.as_bytes().len()),
-            Err(_) => Err(1),
+        match runtime.block_on(self.send_message(SlackMessageContent::new().with_text(text))) {
+            Ok(()) => Ok(buf.len()),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Unable to send message",
+            )),
         }
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        // TODO: Is there an upper limit to slack message content size? if so we might need to impl
+        // this
+        Ok(())
     }
 }

@@ -66,7 +66,7 @@ pub extern "C" fn ffi_write_to_descriptor(
     manager: *mut slack_descriptor::SlackDescriptorManager,
     identifier: *const DescriptorId,
     content: *const c_char,
-) -> ErrorCode {
+) -> isize {
     unsafe {
         // TODO: need to review the safety requirements here file:///home/medwards/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/std/ffi/struct.CStr.html#method.from_ptr
         let content = CStr::from_ptr(content);
@@ -76,9 +76,9 @@ pub extern "C" fn ffi_write_to_descriptor(
         manager
             .get_descriptor(&identifier)
             .expect("descriptor was not found")
-            .write(content.to_string_lossy().to_string())
-            .ok()
-            .unwrap_or(0) // TODO: this should return -1 for failures
+            .write(content.to_bytes())
+            .map(|size| size as isize) // TODO: tryinto instead
+            .unwrap_or(-1)
     }
 }
 
@@ -88,7 +88,8 @@ pub extern "C" fn ffi_read_from_descriptor(
     identifier: *const DescriptorId,
     read_point: *mut c_char,
     space_left: usize,
-) -> usize {
+    out_read_bytes: *mut usize,
+) -> isize {
     // TODO: would rather write directly into the string if possible
     // We know this is is the max buffer size because MAX_RAW_INPUT_LENGTH is defined in structs.h
     let mut buffer = [0; 512];
@@ -104,12 +105,13 @@ pub extern "C" fn ffi_read_from_descriptor(
             Ok(n) => n,
             Err(e) => {
                 println!("Failed to read: {:?}:", e);
-                0 // TODO actually return -1 here
+                return -1;
             }
         };
         // TODO: is buffer really an i8 array?
         copy_nonoverlapping(buffer.as_ptr() as *mut i8, read_point, read_bytes);
-        return read_bytes;
+        *out_read_bytes = read_bytes;
+        return 0;
     }
 }
 
