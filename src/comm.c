@@ -2067,7 +2067,7 @@ int process_ffi_input(struct DescriptorManager *manager, struct descriptor_data 
     }
 
     // TODO here
-    ssize_t error = ffi_read_from_descriptor(manager, t->ffi_descriptor, read_point, space_left, bytes_read);
+    ssize_t error = ffi_read_from_descriptor(manager, t->ffi_descriptor, read_point, space_left, &bytes_read);
 
     if (error < 0)	/* Error, disconnect them. */
       return (-1);

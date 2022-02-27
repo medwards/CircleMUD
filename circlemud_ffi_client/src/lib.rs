@@ -5,30 +5,39 @@ use std::ptr::copy_nonoverlapping;
 mod descriptor;
 use descriptor::{/*ByteStreamDescriptor,*/ DescriptorId, DescriptorManager, ErrorCode};
 mod slack_descriptor;
+mod telnet_descriptor;
 
 // "descriptor" will be an identifier the ffi client can use to determine which user this request
 // is for, for now just handle it all globally on stdin/stdout
 
 #[no_mangle]
-pub extern "C" fn ffi_create_descriptor_manager() -> *mut slack_descriptor::SlackDescriptorManager {
-    Box::into_raw(Box::new(slack_descriptor::SlackDescriptorManager::new(
+pub extern "C" fn ffi_create_descriptor_manager() -> *mut Box<dyn DescriptorManager> {
+    /*
+    let manager = slack_descriptor::SlackDescriptorManager::new(
         &std::env::var("SLACK_SIGNING_SECRET")
             .expect("SLACK_SIGNING_SECRET not in the environment"),
         std::env::var("SLACK_BOT_TOKEN")
             .expect("SLACK_BOT_TOKEN not in the environment")
             .into(),
-    )))
+    );
+    */
+    let manager = telnet_descriptor::TelnetDescriptorManager::new();
+
+    let dyn_manager = Box::new(manager) as Box<dyn DescriptorManager>;
+    let pointer_to_dyn = Box::new(dyn_manager);
+    Box::into_raw(pointer_to_dyn)
 }
 
 #[no_mangle]
 pub extern "C" fn ffi_new_descriptor(
-    manager: *mut slack_descriptor::SlackDescriptorManager,
+    manager: *mut Box<dyn DescriptorManager>,
     descriptor_type: usize,
 ) -> *const DescriptorId {
     unsafe {
         match manager
             .as_mut()
             .expect("manager was null")
+            .as_mut()
             .get_new_descriptor()
         {
             Some(descriptor) => {
@@ -49,12 +58,12 @@ pub extern "C" fn ffi_new_descriptor(
 
 #[no_mangle]
 pub extern "C" fn ffi_close_descriptor(
-    manager: *mut slack_descriptor::SlackDescriptorManager,
+    manager: *mut Box<dyn DescriptorManager>,
     identifier: *mut DescriptorId,
 ) {
     unsafe {
         // TODO ensure its not null (or can I just drop(descriptor.as_ref().unwrap()))?
-        let manager = manager.as_mut().expect("manager was null");
+        let manager = manager.as_mut().expect("manager was null").as_mut();
         let identifier = Box::from_raw(identifier);
         manager.close_descriptor(&identifier);
         drop(identifier);
@@ -63,7 +72,7 @@ pub extern "C" fn ffi_close_descriptor(
 
 #[no_mangle]
 pub extern "C" fn ffi_write_to_descriptor(
-    manager: *mut slack_descriptor::SlackDescriptorManager,
+    manager: *mut Box<DescriptorManager>,
     identifier: *const DescriptorId,
     content: *const c_char,
 ) -> isize {
@@ -71,7 +80,7 @@ pub extern "C" fn ffi_write_to_descriptor(
         // TODO: need to review the safety requirements here file:///home/medwards/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/share/doc/rust/html/std/ffi/struct.CStr.html#method.from_ptr
         let content = CStr::from_ptr(content);
         // TODO need to ensure its not null
-        let manager = manager.as_mut().expect("manager was null");
+        let manager = manager.as_mut().expect("manager was null").as_mut();
         let identifier = identifier.as_ref().expect("descriptor identifier was null");
         manager
             .get_descriptor(&identifier)
@@ -84,7 +93,7 @@ pub extern "C" fn ffi_write_to_descriptor(
 
 #[no_mangle]
 pub extern "C" fn ffi_read_from_descriptor(
-    manager: *mut slack_descriptor::SlackDescriptorManager,
+    manager: *mut Box<DescriptorManager>,
     identifier: *const DescriptorId,
     read_point: *mut c_char,
     space_left: usize,
@@ -95,7 +104,7 @@ pub extern "C" fn ffi_read_from_descriptor(
     let mut buffer = [0; 512];
 
     unsafe {
-        let manager = manager.as_mut().expect("descriptor was null");
+        let manager = manager.as_mut().expect("descriptor was null").as_mut();
         let identifier = identifier.as_ref().expect("descriptor identifier was null");
         let read_bytes: usize = match manager
             .get_descriptor(&identifier)
