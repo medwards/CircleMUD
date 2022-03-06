@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Read, Result as IoResult, Write};
+use std::io::{ErrorKind, Read, Result as IoResult, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
@@ -47,6 +47,7 @@ impl descriptor::DescriptorManager for TelnetDescriptorManager {
                     format!("{:?}", stream.peer_addr()).as_ref(),
                     "telnet",
                 );
+                stream.set_nonblocking(true);
                 let descriptor = TelnetDescriptor {
                     identifier: identifier.clone(),
                     stream,
@@ -85,13 +86,25 @@ impl Descriptor for TelnetDescriptor {
 
 impl Read for TelnetDescriptor {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        self.stream.read(buf)
+        self.stream.read(buf).or_else(|e| {
+            if e.kind() == ErrorKind::WouldBlock {
+                Ok(0)
+            } else {
+                Err(e)
+            }
+        })
     }
 }
 
 impl Write for TelnetDescriptor {
     fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
-        self.stream.write(buf)
+        self.stream.write(buf).or_else(|e| {
+            if e.kind() == ErrorKind::WouldBlock {
+                Ok(0)
+            } else {
+                Err(e)
+            }
+        })
     }
 
     fn flush(&mut self) -> IoResult<()> {
