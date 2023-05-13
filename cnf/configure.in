@@ -13,6 +13,14 @@ AC_CHECK_PROGS(MORE, less most more cat)
 dnl Checks for programs.
 AC_PROG_CC
 
+dnl Check for cargo
+AC_PATH_PROG([CARGO], [cargo], [notfound])
+AS_IF([test "$CARGO" = "notfound"], [AC_MSG_ERROR([cargo is required])])
+
+dnl Check for rustc
+AC_PATH_PROG([RUSTC], [rustc], [notfound])
+AS_IF([test "$RUSTC" = "notfound"], [AC_MSG_ERROR([rustc is required])])
+
 dnl If we're using gcc, use gcc options.
 dnl If not, test for various common switches to make a 'cc' compiler
 dnl compile ANSI C code.

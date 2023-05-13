@@ -21,7 +21,7 @@ BINDIR = ../bin
 
 CFLAGS = @CFLAGS@ $(MYFLAGS) $(PROFILE)
 
-LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@
+LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@ -L ../mud-comms/target/release -lmud_comms -lpthread -ldl
 
 OBJFILES = act.comm.o act.informative.o act.item.o act.movement.o \
 	act.offensive.o act.other.o act.social.o act.wizard.o alias.o ban.o \
@@ -53,11 +53,16 @@ utils: .accepted
 circle:
 	$(MAKE) $(BINDIR)/circle
 
-$(BINDIR)/circle : $(OBJFILES)
+$(BINDIR)/circle : $(OBJFILES) ../mud-comms/target/release/libmud_comms.a
 	$(CC) -o $(BINDIR)/circle $(PROFILE) $(OBJFILES) $(LIBS)
+
+../mud-comms/target/release/libmud_comms.a: ../mud-comms/Cargo.toml $(shell find ../mud-comms/src)
+	cargo build --release --manifest-path=../mud-comms/Cargo.toml
 
 clean:
 	rm -f *.o
+	cargo clean --manifest-path=../mud-comms/Cargo.toml
+
 ref:
 #
 # Create the cross reference files
