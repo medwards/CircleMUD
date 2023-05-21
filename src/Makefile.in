@@ -21,7 +21,7 @@ BINDIR = ../bin
 
 CFLAGS = @CFLAGS@ $(MYFLAGS) $(PROFILE)
 
-LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@ -L ../mud-comms/target/release -lmud_comms -lpthread -ldl
+LIBS = @LIBS@ @CRYPTLIB@ @NETLIB@ -L ../mud-comms/target/release -lmud_comms -lpthread -ldl -lm
 
 OBJFILES = act.comm.o act.informative.o act.item.o act.movement.o \
 	act.offensive.o act.other.o act.social.o act.wizard.o alias.o ban.o \
@@ -138,7 +138,7 @@ castle.o: castle.c conf.h sysdep.h structs.h utils.h comm.h interpreter.h \
 class.o: class.c conf.h sysdep.h structs.h db.h utils.h spells.h interpreter.h \
   constants.h
 	$(CC) -c $(CFLAGS) class.c
-comm.o: comm.c conf.h sysdep.h structs.h utils.h comm.h interpreter.h handler.h \
+comm.o: comm.c conf.h sysdep.h structs.h utils.h comm.h descriptor.h interpreter.h handler.h \
   db.h house.h
 	$(CC) -c $(CFLAGS) comm.c
 config.o: config.c conf.h sysdep.h structs.h interpreter.h

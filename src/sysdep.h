@@ -387,15 +387,6 @@ struct in_addr {
 # error "You forgot to include conf.h or do not have a valid system define."
 #endif
 
-/* SOCKET -- must be after the winsock.h #include. */
-#ifdef CIRCLE_WINDOWS
-# define CLOSE_SOCKET(sock)	closesocket(sock)
-  typedef SOCKET		socket_t;
-#else
-# define CLOSE_SOCKET(sock)	close(sock)
-  typedef int			socket_t;
-#endif
-
 #if defined(__cplusplus)	/* C++ */
 #define cpp_extern	extern
 #else				/* C */

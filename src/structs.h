@@ -978,7 +978,7 @@ struct txt_q {
 
 
 struct descriptor_data {
-   socket_t	descriptor;	/* file descriptor for socket		*/
+   struct Descriptor*	descriptor;	/* file descriptor for socket		*/
    char	host[HOST_LENGTH+1];	/* hostname				*/
    byte	bad_pws;		/* number of bad pw attemps this login	*/
    byte idle_tics;		/* tics idle at password prompt		*/
