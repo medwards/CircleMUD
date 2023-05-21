@@ -59,6 +59,7 @@
 #include "handler.h"
 #include "db.h"
 #include "house.h"
+#include "descriptor.h"
 
 #ifdef HAVE_ARPA_TELNET_H
 #include <arpa/telnet.h>
@@ -116,24 +117,20 @@ RETSIGTYPE unrestrict_game(int sig);
 RETSIGTYPE reap(int sig);
 RETSIGTYPE checkpointing(int sig);
 RETSIGTYPE hupsig(int sig);
-ssize_t perform_socket_read(socket_t desc, char *read_point,size_t space_left);
-ssize_t perform_socket_write(socket_t desc, const char *txt,size_t length);
 void echo_off(struct descriptor_data *d);
 void echo_on(struct descriptor_data *d);
 void circle_sleep(struct timeval *timeout);
 int get_from_q(struct txt_q *queue, char *dest, int *aliased);
 void init_game(ush_int port);
 void signal_setup(void);
-void game_loop(socket_t mother_desc);
-socket_t init_socket(ush_int port);
-int new_descriptor(socket_t s);
+void game_loop(struct DescriptorManager *mother_desc);
+int new_descriptor_data(struct DescriptorManager *manager, struct Descriptor *desc);
 int get_max_players(void);
-int process_output(struct descriptor_data *t);
-int process_input(struct descriptor_data *t);
+int process_output(struct DescriptorManager *manager, struct descriptor_data *t);
+int process_input(struct DescriptorManager *manager, struct descriptor_data *t);
 void timediff(struct timeval *diff, struct timeval *a, struct timeval *b);
 void timeadd(struct timeval *sum, struct timeval *a, struct timeval *b);
 void flush_queues(struct descriptor_data *d);
-void nonblock(socket_t s);
 int perform_subst(struct descriptor_data *t, char *orig, char *subst);
 void record_usage(void);
 char *make_prompt(struct descriptor_data *point);
@@ -141,7 +138,6 @@ void check_idle_passwords(void);
 void heartbeat(int pulse);
 struct in_addr *get_bind_addr(void);
 int parse_ip(const char *addr, struct in_addr *inaddr);
-int set_sendbuf(socket_t s);
 void setup_log(const char *filename, int fd);
 int open_logfile(const char *filename, FILE *stderr_fp);
 #if defined(POSIX)
@@ -347,7 +343,7 @@ int main(int argc, char **argv)
 /* Init sockets, run game, and cleanup sockets */
 void init_game(ush_int port)
 {
-  socket_t mother_desc;
+  struct DescriptorManager *mother_desc;
 
   /* We don't want to restart if we crash before we get up. */
   touch(KILLSCRIPT_FILE);
@@ -358,7 +354,7 @@ void init_game(ush_int port)
   max_players = get_max_players();
 
   log("Opening mother connection.");
-  mother_desc = init_socket(port);
+  mother_desc = new_descriptor_manager(port);
 
   boot_db();
 
@@ -378,9 +374,9 @@ void init_game(ush_int port)
 
   log("Closing all sockets.");
   while (descriptor_list)
-    close_socket(descriptor_list);
+    close_descriptor_data(mother_desc, descriptor_list);
 
-  CLOSE_SOCKET(mother_desc);
+  close_descriptor_manager(mother_desc);
   fclose(player_fl);
 
   log("Saving current MUD time.");
@@ -392,108 +388,6 @@ void init_game(ush_int port)
   }
   log("Normal termination of game.");
 }
-
-
-
-/*
- * init_socket sets up the mother descriptor - creates the socket, sets
- * its options up, binds it, and listens.
- */
-socket_t init_socket(ush_int port)
-{
-  socket_t s;
-  struct sockaddr_in sa;
-  int opt;
-
-#ifdef CIRCLE_WINDOWS
-  {
-    WORD wVersionRequested;
-    WSADATA wsaData;
-
-    wVersionRequested = MAKEWORD(1, 1);
-
-    if (WSAStartup(wVersionRequested, &wsaData) != 0) {
-      log("SYSERR: WinSock not available!");
-      exit(1);
-    }
-
-    /*
-     * 4 = stdin, stdout, stderr, mother_desc.  Windows might
-     * keep sockets and files separate, in which case this isn't
-     * necessary, but we will err on the side of caution.
-     */
-    if ((wsaData.iMaxSockets - 4) < max_players) {
-      max_players = wsaData.iMaxSockets - 4;
-    }
-    log("Max players set to %d", max_players);
-
-    if ((s = socket(PF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-      log("SYSERR: Error opening network connection: Winsock error #%d",
-	  WSAGetLastError());
-      exit(1);
-    }
-  }
-#else
-  /*
-   * Should the first argument to socket() be AF_INET or PF_INET?  I don't
-   * know, take your pick.  PF_INET seems to be more widely adopted, and
-   * Comer (_Internetworking with TCP/IP_) even makes a point to say that
-   * people erroneously use AF_INET with socket() when they should be using
-   * PF_INET.  However, the man pages of some systems indicate that AF_INET
-   * is correct; some such as ConvexOS even say that you can use either one.
-   * All implementations I've seen define AF_INET and PF_INET to be the same
-   * number anyway, so the point is (hopefully) moot.
-   */
-
-  if ((s = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
-    perror("SYSERR: Error creating socket");
-    exit(1);
-  }
-#endif				/* CIRCLE_WINDOWS */
-
-#if defined(SO_REUSEADDR) && !defined(CIRCLE_MACINTOSH)
-  opt = 1;
-  if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *) &opt, sizeof(opt)) < 0){
-    perror("SYSERR: setsockopt REUSEADDR");
-    exit(1);
-  }
-#endif
-
-  set_sendbuf(s);
-
-/*
- * The GUSI sockets library is derived from BSD, so it defines
- * SO_LINGER, even though setsockopt() is unimplimented.
- *	(from Dean Takemori <dean@UHHEPH.PHYS.HAWAII.EDU>)
- */
-#if defined(SO_LINGER) && !defined(CIRCLE_MACINTOSH)
-  {
-    struct linger ld;
-
-    ld.l_onoff = 0;
-    ld.l_linger = 0;
-    if (setsockopt(s, SOL_SOCKET, SO_LINGER, (char *) &ld, sizeof(ld)) < 0)
-      perror("SYSERR: setsockopt SO_LINGER");	/* Not fatal I suppose. */
-  }
-#endif
-
-  /* Clear the structure */
-  memset((char *)&sa, 0, sizeof(sa));
-
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(port);
-  sa.sin_addr = *(get_bind_addr());
-
-  if (bind(s, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
-    perror("SYSERR: bind");
-    CLOSE_SOCKET(s);
-    exit(1);
-  }
-  nonblock(s);
-  listen(s, 5);
-  return (s);
-}
-
 
 int get_max_players(void)
 {
@@ -586,7 +480,7 @@ int get_max_players(void)
  * output and sending it out to players, and calling "heartbeat" functions
  * such as mobile_activity().
  */
-void game_loop(socket_t mother_desc)
+void game_loop(struct DescriptorManager* mother_desc)
 {
   fd_set input_set, output_set, exc_set, null_set;
   struct timeval last_time, opt_time, process_time, temp_time;
@@ -607,35 +501,11 @@ void game_loop(socket_t mother_desc)
   /* The Main Loop.  The Big Cheese.  The Top Dog.  The Head Honcho.  The.. */
   while (!circle_shutdown) {
 
+    struct Descriptor* new_d = NULL;
     /* Sleep if we don't have any connections */
     if (descriptor_list == NULL) {
       log("No connections.  Going to sleep.");
-      FD_ZERO(&input_set);
-      FD_SET(mother_desc, &input_set);
-      if (select(mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
-	if (errno == EINTR)
-	  log("Waking up to process signal.");
-	else
-	  perror("SYSERR: Select coma");
-      } else
-	log("New connection.  Waking up.");
       gettimeofday(&last_time, (struct timezone *) 0);
-    }
-    /* Set up the input, output, and exception sets for select(). */
-    FD_ZERO(&input_set);
-    FD_ZERO(&output_set);
-    FD_ZERO(&exc_set);
-    FD_SET(mother_desc, &input_set);
-
-    maxdesc = mother_desc;
-    for (d = descriptor_list; d; d = d->next) {
-#ifndef CIRCLE_WINDOWS
-      if (d->descriptor > maxdesc)
-	maxdesc = d->descriptor;
-#endif
-      FD_SET(d->descriptor, &input_set);
-      FD_SET(d->descriptor, &output_set);
-      FD_SET(d->descriptor, &exc_set);
     }
 
     /*
@@ -676,31 +546,28 @@ void game_loop(socket_t mother_desc)
       timediff(&timeout, &last_time, &now);
     } while (timeout.tv_usec || timeout.tv_sec);
 
-    /* Poll (without blocking) for new input, output, and exceptions */
-    if (select(maxdesc + 1, &input_set, &output_set, &exc_set, &null_time) < 0) {
-      perror("SYSERR: Select poll");
-      return;
+    new_d = new_descriptor(mother_desc);
+    if (new_d == NULL) {
+      // nothing to do, go back to sleep
+    } else {
+      log("New connection.  Waking up.");
+      new_descriptor_data(mother_desc, new_d);
     }
-    /* If there are new connections waiting, accept them. */
-    if (FD_ISSET(mother_desc, &input_set))
-      new_descriptor(mother_desc);
 
     /* Kick out the freaky folks in the exception set and marked for close */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (FD_ISSET(d->descriptor, &exc_set)) {
-	FD_CLR(d->descriptor, &input_set);
-	FD_CLR(d->descriptor, &output_set);
-	close_socket(d);
+      if (FALSE) { // TODO: TcpStream::take_error in Descriptor::take_error?
+	close_descriptor_data(mother_desc, d);
       }
     }
 
     /* Process descriptors with input pending */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (FD_ISSET(d->descriptor, &input_set))
-	if (process_input(d) < 0)
-	  close_socket(d);
+      //if (FD_ISSET(d->descriptor, &input_set))
+	if (process_input(mother_desc, d) < 0)
+	  close_descriptor_data(mother_desc, d);
     }
 
     /* Process commands we just read from process_input */
@@ -755,10 +622,10 @@ void game_loop(socket_t mother_desc)
     /* Send queued output out to the operating system (ultimately to user). */
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
-      if (*(d->output) && FD_ISSET(d->descriptor, &output_set)) {
+      if (*(d->output)) {
 	/* Output for this player is ready. */
 
-        process_output(d);
+        process_output(mother_desc, d);
         if (d->bufptr == 0)	/* All output sent. */
           d->has_prompt = TRUE;
       }
@@ -767,7 +634,7 @@ void game_loop(socket_t mother_desc)
     /* Print prompts for other descriptors who had no other output */
     for (d = descriptor_list; d; d = d->next) {
       if (!d->has_prompt && d->bufptr == 0) {
-	write_to_descriptor(d->descriptor, make_prompt(d));
+	write_to_descriptor(mother_desc, d->descriptor, make_prompt(d));
 	d->has_prompt = TRUE;
       }
     }
@@ -776,7 +643,7 @@ void game_loop(socket_t mother_desc)
     for (d = descriptor_list; d; d = next_d) {
       next_d = d->next;
       if (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT)
-	close_socket(d);
+	close_descriptor_data(mother_desc, d);
     }
 
     /*
@@ -825,7 +692,6 @@ void game_loop(socket_t mother_desc)
 #endif
   }
 }
-
 
 void heartbeat(int pulse)
 {
@@ -1259,32 +1125,8 @@ int parse_ip(const char *addr, struct in_addr *inaddr)
 
 
 
-/* Sets the kernel's send buffer size for the descriptor */
-int set_sendbuf(socket_t s)
+int new_descriptor_data(struct DescriptorManager *manager, struct Descriptor *desc)
 {
-#if defined(SO_SNDBUF) && !defined(CIRCLE_MACINTOSH)
-  int opt = MAX_SOCK_BUF;
-
-  if (setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *) &opt, sizeof(opt)) < 0) {
-    perror("SYSERR: setsockopt SNDBUF");
-    return (-1);
-  }
-
-#if 0
-  if (setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char *) &opt, sizeof(opt)) < 0) {
-    perror("SYSERR: setsockopt RCVBUF");
-    return (-1);
-  }
-#endif
-
-#endif
-
-  return (0);
-}
-
-int new_descriptor(socket_t s)
-{
-  socket_t desc;
   int sockets_connected = 0;
   socklen_t i;
   static int last_desc = 0;	/* last descriptor number */
@@ -1292,52 +1134,41 @@ int new_descriptor(socket_t s)
   struct sockaddr_in peer;
   struct hostent *from;
 
-  /* accept the new connection */
-  i = sizeof(peer);
-  if ((desc = accept(s, (struct sockaddr *) &peer, &i)) == INVALID_SOCKET) {
-    perror("SYSERR: accept");
-    return (-1);
-  }
-  /* keep it from blocking */
-  nonblock(desc);
-
-  /* set the send buffer size */
-  if (set_sendbuf(desc) < 0) {
-    CLOSE_SOCKET(desc);
-    return (0);
-  }
-
   /* make sure we have room for it */
   for (newd = descriptor_list; newd; newd = newd->next)
     sockets_connected++;
 
   if (sockets_connected >= max_players) {
-    write_to_descriptor(desc, "Sorry, CircleMUD is full right now... please try again later!\r\n");
-    CLOSE_SOCKET(desc);
+    write_to_descriptor(manager, desc, "Sorry, CircleMUD is full right now... please try again later!\r\n");
+    close_descriptor(manager, desc);
     return (0);
   }
   /* create a new descriptor */
   CREATE(newd, struct descriptor_data, 1);
 
   /* find the sitename */
-  if (nameserver_is_slow || !(from = gethostbyaddr((char *) &peer.sin_addr,
-				      sizeof(peer.sin_addr), AF_INET))) {
+  if (TRUE) {
+      // TODO: push DNS lookup to Descriptor
+  } else { 
+      if (nameserver_is_slow || !(from = gethostbyaddr((char *) &peer.sin_addr,
+                                          sizeof(peer.sin_addr), AF_INET))) {
 
-    /* resolution failed */
-    if (!nameserver_is_slow)
-      perror("SYSERR: gethostbyaddr");
+        /* resolution failed */
+        if (!nameserver_is_slow)
+          perror("SYSERR: gethostbyaddr");
 
-    /* find the numeric site address */
-    strncpy(newd->host, (char *)inet_ntoa(peer.sin_addr), HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
-    *(newd->host + HOST_LENGTH) = '\0';
-  } else {
-    strncpy(newd->host, from->h_name, HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
-    *(newd->host + HOST_LENGTH) = '\0';
+        /* find the numeric site address */
+        strncpy(newd->host, (char *)inet_ntoa(peer.sin_addr), HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
+        *(newd->host + HOST_LENGTH) = '\0';
+      } else {
+        strncpy(newd->host, from->h_name, HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
+        *(newd->host + HOST_LENGTH) = '\0';
+      }
   }
 
   /* determine if the site is banned */
   if (isbanned(newd->host) == BAN_ALL) {
-    CLOSE_SOCKET(desc);
+    close_descriptor(manager, desc);
     mudlog(CMP, LVL_GOD, TRUE, "Connection attempt denied from [%s]", newd->host);
     free(newd);
     return (0);
@@ -1393,7 +1224,7 @@ int new_descriptor(socket_t s)
  *	 2 bytes: extra \r\n for non-comapct
  *      14 bytes: unused
  */
-int process_output(struct descriptor_data *t)
+int process_output(struct DescriptorManager *manager, struct descriptor_data *t)
 {
   char i[MAX_SOCK_BUF], *osb = i + 2;
   int result;
@@ -1421,14 +1252,14 @@ int process_output(struct descriptor_data *t)
    */
   if (t->has_prompt) {
     t->has_prompt = FALSE;
-    result = write_to_descriptor(t->descriptor, i);
+    result = write_to_descriptor(manager, t->descriptor, i);
     if (result >= 2)
       result -= 2;
   } else
-    result = write_to_descriptor(t->descriptor, osb);
+    result = write_to_descriptor(manager, t->descriptor, osb);
 
   if (result < 0) {	/* Oops, fatal error. Bye! */
-    close_socket(t);
+    close_descriptor_data(manager, t);
     return (-1);
   } else if (result == 0)	/* Socket buffer full. Try later. */
     return (0);
@@ -1480,210 +1311,6 @@ int process_output(struct descriptor_data *t)
 
 
 /*
- * perform_socket_write: takes a descriptor, a pointer to text, and a
- * text length, and tries once to send that text to the OS.  This is
- * where we stuff all the platform-dependent stuff that used to be
- * ugly #ifdef's in write_to_descriptor().
- *
- * This function must return:
- *
- * -1  If a fatal error was encountered in writing to the descriptor.
- *  0  If a transient failure was encountered (e.g. socket buffer full).
- * >0  To indicate the number of bytes successfully written, possibly
- *     fewer than the number the caller requested be written.
- *
- * Right now there are two versions of this function: one for Windows,
- * and one for all other platforms.
- */
-
-#if defined(CIRCLE_WINDOWS)
-
-ssize_t perform_socket_write(socket_t desc, const char *txt, size_t length)
-{
-  ssize_t result;
-
-  result = send(desc, txt, length, 0);
-
-  if (result > 0) {
-    /* Write was sucessful */
-    return (result);
-  }
-
-  if (result == 0) {
-    /* This should never happen! */
-    log("SYSERR: Huh??  write() returned 0???  Please report this!");
-    return (-1);
-  }
-
-  /* result < 0: An error was encountered. */
-
-  /* Transient error? */
-  if (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINTR)
-    return (0);
-
-  /* Must be a fatal error. */
-  return (-1);
-}
-
-#else
-
-#if defined(CIRCLE_ACORN)
-#define write	socketwrite
-#endif
-
-/* perform_socket_write for all Non-Windows platforms */
-ssize_t perform_socket_write(socket_t desc, const char *txt, size_t length)
-{
-  ssize_t result;
-
-  result = write(desc, txt, length);
-
-  if (result > 0) {
-    /* Write was successful. */
-    return (result);
-  }
-
-  if (result == 0) {
-    /* This should never happen! */
-    log("SYSERR: Huh??  write() returned 0???  Please report this!");
-    return (-1);
-  }
-
-  /*
-   * result < 0, so an error was encountered - is it transient?
-   * Unfortunately, different systems use different constants to
-   * indicate this.
-   */
-
-#ifdef EAGAIN		/* POSIX */
-  if (errno == EAGAIN)
-    return (0);
-#endif
-
-#ifdef EWOULDBLOCK	/* BSD */
-  if (errno == EWOULDBLOCK)
-    return (0);
-#endif
-
-#ifdef EDEADLK		/* Macintosh */
-  if (errno == EDEADLK)
-    return (0);
-#endif
-
-  /* Looks like the error was fatal.  Too bad. */
-  return (-1);
-}
-
-#endif /* CIRCLE_WINDOWS */
-
-    
-/*
- * write_to_descriptor takes a descriptor, and text to write to the
- * descriptor.  It keeps calling the system-level write() until all
- * the text has been delivered to the OS, or until an error is
- * encountered.
- *
- * Returns:
- * >=0  If all is well and good.
- *  -1  If an error was encountered, so that the player should be cut off.
- */
-int write_to_descriptor(socket_t desc, const char *txt)
-{
-  ssize_t bytes_written;
-  size_t total = strlen(txt), write_total = 0;
-
-  while (total > 0) {
-    bytes_written = perform_socket_write(desc, txt, total);
-
-    if (bytes_written < 0) {
-      /* Fatal error.  Disconnect the player. */
-      perror("SYSERR: Write to socket");
-      return (-1);
-    } else if (bytes_written == 0) {
-      /* Temporary failure -- socket buffer full. */
-      return (write_total);
-    } else {
-      txt += bytes_written;
-      total -= bytes_written;
-      write_total += bytes_written;
-    }
-  }
-
-  return (write_total);
-}
-
-
-/*
- * Same information about perform_socket_write applies here. I like
- * standards, there are so many of them. -gg 6/30/98
- */
-ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space_left)
-{
-  ssize_t ret;
-
-#if defined(CIRCLE_ACORN)
-  ret = recv(desc, read_point, space_left, MSG_DONTWAIT);
-#elif defined(CIRCLE_WINDOWS)
-  ret = recv(desc, read_point, space_left, 0);
-#else
-  ret = read(desc, read_point, space_left);
-#endif
-
-  /* Read was successful. */
-  if (ret > 0)
-    return (ret);
-
-  /* read() returned 0, meaning we got an EOF. */
-  if (ret == 0) {
-    log("WARNING: EOF on socket read (connection broken by peer)");
-    return (-1);
-  }
-
-  /*
-   * read returned a value < 0: there was an error
-   */
-
-#if defined(CIRCLE_WINDOWS)	/* Windows */
-  if (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINTR)
-    return (0);
-#else
-
-#ifdef EINTR		/* Interrupted system call - various platforms */
-  if (errno == EINTR)
-    return (0);
-#endif
-
-#ifdef EAGAIN		/* POSIX */
-  if (errno == EAGAIN)
-    return (0);
-#endif
-
-#ifdef EWOULDBLOCK	/* BSD */
-  if (errno == EWOULDBLOCK)
-    return (0);
-#endif /* EWOULDBLOCK */
-
-#ifdef EDEADLK		/* Macintosh */
-  if (errno == EDEADLK)
-    return (0);
-#endif
-
-#ifdef ECONNRESET
-  if (errno == ECONNRESET)
-    return (-1);
-#endif
-
-#endif /* CIRCLE_WINDOWS */
-
-  /*
-   * We don't know what happened, cut them off. This qualifies for
-   * a SYSERR because we have no idea what happened at this point.
-   */
-  perror("SYSERR: perform_socket_read: about to lose connection");
-  return (-1);
-}
-
-/*
  * ASSUMPTION: There will be no newlines in the raw input buffer when this
  * function is called.  We must maintain that before returning.
  *
@@ -1696,7 +1323,7 @@ ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space_left)
  * character. (Do you really need 256 characters on a line?)
  * -gg 1/21/2000
  */
-int process_input(struct descriptor_data *t)
+int process_input(struct DescriptorManager *manager, struct descriptor_data *t)
 {
   int buf_length, failed_subst;
   ssize_t bytes_read;
@@ -1715,7 +1342,7 @@ int process_input(struct descriptor_data *t)
       return (-1);
     }
 
-    bytes_read = perform_socket_read(t->descriptor, read_point, space_left);
+    bytes_read = read_from_descriptor(manager, t->descriptor, read_point, space_left);
 
     if (bytes_read < 0)	/* Error, disconnect them. */
       return (-1);
@@ -1789,7 +1416,7 @@ int process_input(struct descriptor_data *t)
       char buffer[MAX_INPUT_LENGTH + 64];
 
       snprintf(buffer, sizeof(buffer), "Line too long.  Truncated to:\r\n%s\r\n", tmp);
-      if (write_to_descriptor(t->descriptor, buffer) < 0)
+      if (write_to_descriptor(manager, t->descriptor, buffer) < 0)
 	return (-1);
     }
     if (t->snoop_by)
@@ -1904,12 +1531,13 @@ int perform_subst(struct descriptor_data *t, char *orig, char *subst)
 
 
 
-void close_socket(struct descriptor_data *d)
+void close_descriptor_data(struct DescriptorManager *manager, struct descriptor_data *d)
 {
   struct descriptor_data *temp;
 
   REMOVE_FROM_LIST(d, descriptor_list, next);
-  CLOSE_SOCKET(d->descriptor);
+  // TODO: provide manager
+  close_descriptor(manager, d->descriptor);
   flush_queues(d);
 
   /* Forget snooping */
@@ -1987,72 +1615,6 @@ void check_idle_passwords(void)
     }
   }
 }
-
-
-
-/*
- * I tried to universally convert Circle over to POSIX compliance, but
- * alas, some systems are still straggling behind and don't have all the
- * appropriate defines.  In particular, NeXT 2.x defines O_NDELAY but not
- * O_NONBLOCK.  Krusty old NeXT machines!  (Thanks to Michael Jones for
- * this and various other NeXT fixes.)
- */
-
-#if defined(CIRCLE_WINDOWS)
-
-void nonblock(socket_t s)
-{
-  unsigned long val = 1;
-  ioctlsocket(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_AMIGA)
-
-void nonblock(socket_t s)
-{
-  long val = 1;
-  IoctlSocket(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_ACORN)
-
-void nonblock(socket_t s)
-{
-  int val = 1;
-  socket_ioctl(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_VMS)
-
-void nonblock(socket_t s)
-{
-  int val = 1;
-
-  if (ioctl(s, FIONBIO, &val) < 0) {
-    perror("SYSERR: Fatal error executing nonblock (comm.c)");
-    exit(1);
-  }
-}
-
-#elif defined(CIRCLE_UNIX) || defined(CIRCLE_OS2) || defined(CIRCLE_MACINTOSH)
-
-#ifndef O_NONBLOCK
-#define O_NONBLOCK O_NDELAY
-#endif
-
-void nonblock(socket_t s)
-{
-  int flags;
-
-  flags = fcntl(s, F_GETFL, 0);
-  flags |= O_NONBLOCK;
-  if (fcntl(s, F_SETFL, flags) < 0) {
-    perror("SYSERR: Fatal error executing nonblock (comm.c)");
-    exit(1);
-  }
-}
-
-#endif  /* CIRCLE_UNIX || CIRCLE_OS2 || CIRCLE_MACINTOSH */
 
 
 /* ******************************************************************

@@ -9,13 +9,14 @@
 ************************************************************************ */
 
 #define NUM_RESERVED_DESCS	8
+#include "descriptor.h"
 
 /* comm.c */
 size_t	send_to_char(struct char_data *ch, const char *messg, ...) __attribute__ ((format (printf, 2, 3)));
 void	send_to_all(const char *messg, ...) __attribute__ ((format (printf, 1, 2)));
 void	send_to_room(room_rnum room, const char *messg, ...) __attribute__ ((format (printf, 2, 3)));
 void	send_to_outdoor(const char *messg, ...) __attribute__ ((format (printf, 1, 2)));
-void	close_socket(struct descriptor_data *d);
+void	close_descriptor_data(struct DescriptorManager *manager, struct descriptor_data *d);
 
 void	perform_act(const char *orig, struct char_data *ch,
 		struct obj_data *obj, const void *vict_obj, const struct char_data *to);
@@ -31,7 +32,6 @@ void	act(const char *str, int hide_invisible, struct char_data *ch,
 
 /* I/O functions */
 void	write_to_q(const char *txt, struct txt_q *queue, int aliased);
-int	write_to_descriptor(socket_t desc, const char *txt);
 size_t	write_to_output(struct descriptor_data *d, const char *txt, ...) __attribute__ ((format (printf, 2, 3)));
 size_t	vwrite_to_output(struct descriptor_data *d, const char *format, va_list args);
 void	string_add(struct descriptor_data *d, char *str);
