@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 libc = "0.2.144"
 dns-lookup = "1.0.8"
+crossbeam-channel = "0.5.8"
 
 [dev-dependencies]
 tempdir = "0.3.7"

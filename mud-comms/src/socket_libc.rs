@@ -116,7 +116,9 @@ impl DescriptorManager for SocketDescriptorManager {
         Ok(())
     }
 
-    fn new_descriptor(&self) -> Result<Box<dyn Descriptor>, std::io::Error> {
+    fn new_descriptor(
+        &self,
+    ) -> Result<Box<dyn Descriptor>, Box<dyn std::error::Error + Send + Sync>> {
         unsafe {
             // Maybe use FD_ZERO?
             let mut input_set: fd_set = mem::zeroed();
@@ -132,7 +134,10 @@ impl DescriptorManager for SocketDescriptorManager {
                 &mut timeout as *mut timeval,
             ) < 0
             {
-                return Err(std::io::Error::new(ErrorKind::Other, "libc::select failed"));
+                return Err(Box::new(std::io::Error::new(
+                    ErrorKind::Other,
+                    "libc::select failed",
+                )));
             }
 
             // there is a descriptor
@@ -144,7 +149,10 @@ impl DescriptorManager for SocketDescriptorManager {
                 &mut peer_len as *mut usize as *mut u32,
             );
             if file_descriptor < 0 {
-                return Err(std::io::Error::new(ErrorKind::Other, "libc::accept failed"));
+                return Err(Box::new(std::io::Error::new(
+                    ErrorKind::Other,
+                    "libc::accept failed",
+                )));
             }
 
             let ip_addr = IpAddr::V4(Ipv4Addr::from(ntohl(peer.sin_addr.s_addr)));
