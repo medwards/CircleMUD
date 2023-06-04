@@ -32,7 +32,16 @@ use libc::O_NONBLOCK;
 use libc::PF_INET;
 use libc::SOCK_STREAM;
 
-pub struct DescriptorManager {
+pub trait DescriptorManager {
+    fn block_until_descriptor(&self) -> Result<(), std::io::Error>;
+    fn new_descriptor(&self) -> Result<Box<dyn Descriptor>, std::io::Error>;
+}
+
+pub trait Descriptor: Read + Write {
+    fn get_hostname(&self) -> &str;
+}
+
+pub struct SocketDescriptorManager {
     pub(crate) socket: c_int,
 }
 
@@ -49,8 +58,8 @@ pub fn ntohl(u: u32) -> u32 {
     u32::from_be(u)
 }
 
-impl DescriptorManager {
-    pub(crate) fn new(listen_port: u16) -> Result<DescriptorManager, std::io::Error> {
+impl SocketDescriptorManager {
+    pub(crate) fn new(listen_port: u16) -> Result<SocketDescriptorManager, std::io::Error> {
         unsafe {
             let s = socket(PF_INET, SOCK_STREAM, 0);
             if s < 0 {
@@ -87,11 +96,13 @@ impl DescriptorManager {
             if listen(s, 5) < 0 {
                 return Err(std::io::Error::new(ErrorKind::Other, "libc::listen failed"));
             }
-            Ok(DescriptorManager { socket: s })
+            Ok(SocketDescriptorManager { socket: s })
         }
     }
+}
 
-    pub(crate) fn block_until_descriptor(&self) -> Result<(), std::io::Error> {
+impl DescriptorManager for SocketDescriptorManager {
+    fn block_until_descriptor(&self) -> Result<(), std::io::Error> {
         unsafe {
             let mut input_set: fd_set = mem::zeroed();
             let mut output_set: fd_set = mem::zeroed();
@@ -111,7 +122,7 @@ impl DescriptorManager {
         Ok(())
     }
 
-    pub(crate) fn new_descriptor(&self) -> Result<Box<Descriptor>, std::io::Error> {
+    fn new_descriptor(&self) -> Result<Box<dyn Descriptor>, std::io::Error> {
         unsafe {
             // Maybe use FD_ZERO?
             let mut input_set: fd_set = mem::zeroed();
@@ -147,7 +158,7 @@ impl DescriptorManager {
                 .or::<std::io::Error>(Ok(ip_addr.to_string()))
                 .expect("lookup with ip fallback to be infallible");
 
-            Ok(Box::new(Descriptor {
+            Ok(Box::new(SocketDescriptor {
                 file_descriptor,
                 hostname,
             }))
@@ -155,7 +166,7 @@ impl DescriptorManager {
     }
 }
 
-impl Drop for DescriptorManager {
+impl Drop for SocketDescriptorManager {
     fn drop(&mut self) {
         unsafe {
             if close(self.socket) < 0 {
@@ -165,12 +176,12 @@ impl Drop for DescriptorManager {
     }
 }
 
-pub struct Descriptor {
+pub struct SocketDescriptor {
     pub(crate) file_descriptor: c_int,
     pub(crate) hostname: String,
 }
 
-impl Drop for Descriptor {
+impl Drop for SocketDescriptor {
     fn drop(&mut self) {
         unsafe {
             if close(self.file_descriptor) < 0 {
@@ -180,7 +191,13 @@ impl Drop for Descriptor {
     }
 }
 
-impl Read for Descriptor {
+impl Descriptor for SocketDescriptor {
+    fn get_hostname(&self) -> &str {
+        self.hostname.as_str()
+    }
+}
+
+impl Read for SocketDescriptor {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         unsafe {
             // Check if there is anything to read
@@ -218,7 +235,7 @@ impl Read for Descriptor {
     }
 }
 
-impl Write for Descriptor {
+impl Write for SocketDescriptor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         unsafe {
             let retval = send(
