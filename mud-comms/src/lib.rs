@@ -1,4 +1,6 @@
+mod descriptor;
 mod socket_libc;
+mod socket_std;
 
 use std::cmp::min;
 use std::ffi::CStr;
@@ -9,10 +11,8 @@ use std::os::raw::c_char;
 use std::os::raw::c_uchar;
 
 #[no_mangle]
-pub extern "C" fn new_descriptor_manager(
-    port: u16,
-) -> *mut Box<dyn socket_libc::DescriptorManager> {
-    match socket_libc::SocketDescriptorManager::new(port) {
+pub extern "C" fn new_descriptor_manager(port: u16) -> *mut Box<dyn descriptor::DescriptorManager> {
+    match socket_std::SocketDescriptorManager::new(port) {
         Ok(manager) => Box::into_raw(Box::new(Box::new(manager))),
         // TODO log, then return an error code?
         Err(_) => std::ptr::null_mut(),
@@ -21,7 +21,7 @@ pub extern "C" fn new_descriptor_manager(
 
 #[no_mangle]
 pub extern "C" fn close_descriptor_manager(
-    manager: *mut Box<dyn socket_libc::DescriptorManager>,
+    manager: *mut Box<dyn descriptor::DescriptorManager>,
 ) -> i32 {
     if manager.is_null() {
         return -1;
@@ -36,7 +36,7 @@ pub extern "C" fn close_descriptor_manager(
 
 #[no_mangle]
 pub extern "C" fn block_until_descriptor(
-    mut manager: *mut Box<dyn socket_libc::DescriptorManager>,
+    mut manager: *mut Box<dyn descriptor::DescriptorManager>,
 ) -> i32 {
     if manager.is_null() {
         return -1;
@@ -53,8 +53,8 @@ pub extern "C" fn block_until_descriptor(
 
 #[no_mangle]
 pub extern "C" fn new_descriptor(
-    manager: *mut Box<dyn socket_libc::DescriptorManager>,
-) -> *mut Box<dyn socket_libc::Descriptor> {
+    manager: *mut Box<dyn descriptor::DescriptorManager>,
+) -> *mut Box<dyn descriptor::Descriptor> {
     if manager.is_null() {
         return std::ptr::null_mut();
     }
@@ -69,8 +69,8 @@ pub extern "C" fn new_descriptor(
 
 #[no_mangle]
 pub extern "C" fn close_descriptor(
-    mut _manager: *mut Box<dyn socket_libc::DescriptorManager>,
-    descriptor: *mut Box<dyn socket_libc::Descriptor>,
+    mut _manager: *mut Box<dyn descriptor::DescriptorManager>,
+    descriptor: *mut Box<dyn descriptor::Descriptor>,
 ) -> i32 {
     if descriptor.is_null() {
         return -1;
@@ -83,8 +83,8 @@ pub extern "C" fn close_descriptor(
 
 #[no_mangle]
 pub extern "C" fn get_descriptor_hostname(
-    mut manager: *mut Box<dyn socket_libc::DescriptorManager>,
-    mut descriptor: *mut Box<dyn socket_libc::Descriptor>,
+    mut manager: *mut Box<dyn descriptor::DescriptorManager>,
+    mut descriptor: *mut Box<dyn descriptor::Descriptor>,
     read_point: *mut c_uchar,
     space_left: usize,
 ) -> isize {
@@ -112,8 +112,8 @@ pub extern "C" fn get_descriptor_hostname(
 
 #[no_mangle]
 pub extern "C" fn read_from_descriptor(
-    mut manager: *mut Box<dyn socket_libc::DescriptorManager>,
-    mut descriptor: *mut Box<dyn socket_libc::Descriptor>,
+    mut manager: *mut Box<dyn descriptor::DescriptorManager>,
+    mut descriptor: *mut Box<dyn descriptor::Descriptor>,
     read_point: *mut c_uchar,
     space_left: usize,
 ) -> isize {
@@ -141,8 +141,8 @@ pub extern "C" fn read_from_descriptor(
 
 #[no_mangle]
 pub extern "C" fn write_to_descriptor(
-    manager: *mut Box<dyn socket_libc::DescriptorManager>,
-    descriptor: *mut Box<dyn socket_libc::Descriptor>,
+    manager: *mut Box<dyn descriptor::DescriptorManager>,
+    descriptor: *mut Box<dyn descriptor::Descriptor>,
     content: *const c_char,
 ) -> isize {
     if manager.is_null() || descriptor.is_null() || content.is_null() {

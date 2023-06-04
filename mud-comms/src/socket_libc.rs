@@ -32,14 +32,8 @@ use libc::O_NONBLOCK;
 use libc::PF_INET;
 use libc::SOCK_STREAM;
 
-pub trait DescriptorManager {
-    fn block_until_descriptor(&self) -> Result<(), std::io::Error>;
-    fn new_descriptor(&self) -> Result<Box<dyn Descriptor>, std::io::Error>;
-}
-
-pub trait Descriptor: Read + Write {
-    fn get_hostname(&self) -> &str;
-}
+use crate::descriptor::Descriptor;
+use crate::descriptor::DescriptorManager;
 
 pub struct SocketDescriptorManager {
     pub(crate) socket: c_int,
