@@ -21,3 +21,24 @@ The original CircleMUD README is still available as README.old
 `./bin/circle`
 
 (Note: this will run reading and writing `lib/`, if you want a "clean" world then copy `lib` somewhere else and use `./bin/circle -d /tmp/otherlocation/lib`)
+
+Different communication backends (ie socket/telnet server vs Slack) are selected in `mud_comms::new_descriptor_manager` and require rebuilding.
+
+### Slack
+
+#### Setup
+
+You will need to install an App into your Slack workspace:
+
+1. [Create an App](https://api.slack.com/apps?new_app)
+2. Add the `chat:write` and `im:read` OAuth Scopes under *OAuth & Permissions*
+3. *Install App* into your workspace
+4. `SLACK_BOT_USER_OAUTH_TOKEN` comes from *Bot User OAuth token* (visible under *Install App* or *OAuth & Permissions*)
+5. `SLACK_SIGNING_SECRET` Store the values from *Basic Information*/*App Credentials*/*Signing Secret*
+7. Launch the server with all the environment variables set (`SLACK_SIGNING_SECRET=123 SLACK_BOT_TOKEN=xoxb-123 ./bin/circle`)
+8. *Enable Events* in *Event Subscriptions* using `http[s]://YOUR_DOMAIN_OR_IP:8000/push`
+9. *Subscribe to bot events* `message.im` or `message.channels` in *Event Subscriptions* (Watch for the *Save Changes* banner on the bottom of your screen, its easy to miss. Until you click *Save Changes* you will not receive events).
+
+#### Environment
+
+`SLACK_BOT_USER_OAUTH_TOKEN` and `SLACK_SIGNING_SECRET` are required environment variables. `SLACK_SOCKET_ADDR` is recommended. Make sure it serves the Events URL from Setup step 8.

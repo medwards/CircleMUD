@@ -1,4 +1,5 @@
 mod descriptor;
+mod slack;
 mod socket_libc;
 mod socket_std;
 
@@ -18,7 +19,22 @@ pub extern "C" fn new_descriptor_manager(port: u16) -> *mut Box<dyn descriptor::
         eprintln!("Failed to initialize logging");
         return std::ptr::null_mut();
     };
-    match socket_std::SocketDescriptorManager::new(port) {
+
+    // std::net socket server
+    //let result = socket_std::SocketDescriptorManager::new(port);
+    // libc socket server
+    //let result = socket_libc::SocketDescriptorManager::new(port);
+    // slack server
+    let result: std::io::Result<_> = Ok(slack::SlackDescriptorManager::new(
+        std::env::var("SLACK_SIGNING_SECRET")
+            .expect("SLACK_SIGNING_SECRET to be in the environment")
+            .as_str(),
+        slack_morphism::SlackApiTokenValue(
+            std::env::var("SLACK_BOT_USER_OAUTH_TOKEN")
+                .expect("SLACK_BOT_USER_OAUTH_TOKEN to be in the environment"),
+        ),
+    ));
+    match result {
         Ok(manager) => Box::into_raw(Box::new(Box::new(manager))),
         // TODO: return an error?
         Err(e) => {
@@ -75,6 +91,9 @@ pub extern "C" fn new_descriptor(
     }
 
     unsafe {
+        // TODO: Change DescriptorManager::new_descriptor to return
+        // Result<Option<Box<Descriptor>>, Error> and have callers return None descriptors for
+        // non-error cases like TryRecvError::Empty
         match (*manager).new_descriptor() {
             Ok(descriptor) => Box::into_raw(Box::new(descriptor)),
             Err(ref e) => {
@@ -85,6 +104,11 @@ pub extern "C" fn new_descriptor(
                     }
                 }
 
+                if let Some(ref error) = e.downcast_ref::<crossbeam_channel::TryRecvError>() {
+                    if error.is_empty() {
+                        return std::ptr::null_mut();
+                    }
+                }
                 error!("Cannot create new descriptor: {}", e);
                 std::ptr::null_mut()
             }
