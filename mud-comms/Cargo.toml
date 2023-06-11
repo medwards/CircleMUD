@@ -9,6 +9,10 @@ edition = "2021"
 libc = "0.2.144"
 dns-lookup = "1.0.8"
 crossbeam-channel = "0.5.8"
+# logging
+log = "0.4"
+fern = { version = "0.6", features = ["colored"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempdir = "0.3.7"
