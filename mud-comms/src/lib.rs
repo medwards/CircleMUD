@@ -78,6 +78,13 @@ pub extern "C" fn new_descriptor(
         match (*manager).new_descriptor() {
             Ok(descriptor) => Box::into_raw(Box::new(descriptor)),
             Err(ref e) => {
+                // Silently return null if they're not actual errors
+                if let Some(ref error) = e.downcast_ref::<std::io::Error>() {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        return std::ptr::null_mut();
+                    }
+                }
+
                 error!("Cannot create new descriptor: {}", e);
                 std::ptr::null_mut()
             }

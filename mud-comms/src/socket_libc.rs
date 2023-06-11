@@ -140,6 +140,13 @@ impl DescriptorManager for SocketDescriptorManager {
                 )));
             }
 
+            if !FD_ISSET(self.socket, &input_set as *const fd_set) {
+                return Err(Box::new(std::io::Error::new(
+                    ErrorKind::WouldBlock,
+                    "select would have blocked",
+                )));
+            }
+
             // there is a descriptor
             let mut peer: sockaddr_in = mem::zeroed();
             let mut peer_len = size_of::<sockaddr_in>();
